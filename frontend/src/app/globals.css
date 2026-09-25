@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  /* Inter covers Latin text; each Noto Sans variant after it only
+     contributes glyphs for its own script, so the browser picks whichever
+     one actually has the character being rendered (Hindi/Marathi text
+     falls through to Devanagari, Tamil text to Tamil, etc.) with no JS
+     needed. See src/app/layout.tsx for why this matters on the Pi kiosk. */
+  font-family: var(--font-inter), var(--font-noto-devanagari), var(--font-noto-kannada),
+    var(--font-noto-telugu), var(--font-noto-tamil), Arial, Helvetica, sans-serif;
+}
+
+/* Large-format displays — classroom smart boards / TVs, typically 50-70"
+   and viewed from several feet away rather than a laptop at arm's length.
+   Every page's text, spacing, icon sizes, and most component widths come
+   from Tailwind's rem-based utilities (font-*, p-*, gap-*, w-*, etc.), so
+   scaling the root font-size is enough to grow the ENTIRE app proportionally
+   from one place, without hand-tuning breakpoints across every one of the
+   ~60 page/component files. Confirmed via a live audit (2026-09-22): at
+   3840px-wide layouts don't break (no overflow, grids reflow correctly) —
+   they just stay pinned at normal-laptop sizing, e.g. a 224px sidebar with
+   14px nav labels, which reads as tiny from across a room. Discrete steps,
+   not a continuous clamp()/vw scale, so every ordinary desktop/laptop width
+   below 1920px (the vast majority of real usage) is completely untouched. */
+@media (min-width: 1920px) {
+  :root { font-size: 20px; }
+}
+@media (min-width: 2560px) {
+  :root { font-size: 24px; }
+}
+@media (min-width: 3200px) {
+  :root { font-size: 30px; }
+}
+
+/* Wider scroll bars everywhere — the classroom kiosk is driven by an air
+   mouse, nowhere near a trackpad/real mouse's precision, so a thin default
+   scrollbar (and especially its thumb) is a hard target to actually land
+   on, more so at the large-screen sizes above. rem-based, so it grows
+   together with the same breakpoints as everything else on this page
+   instead of staying pinned at one physical size regardless of screen size
+   (requested 2026-09-22). Chromium-only (::-webkit-scrollbar) — this is
+   the Pi kiosk's own browser and every dev machine this ships from;
+   scrollbar-width/-color below are the coarser standard-track equivalent,
+   purely so a non-Chromium browser during development isn't left with the
+   unstyled default instead. */
+* {
+  scrollbar-width: auto;
+  scrollbar-color: rgba(100, 100, 100, 0.45) transparent;
+}
+::-webkit-scrollbar {
+  width: 1rem;
+  height: 1rem;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgba(100, 100, 100, 0.45);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 100, 100, 0.65);
+}

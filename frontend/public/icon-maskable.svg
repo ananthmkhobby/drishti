@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <!-- Maskable icon: keep important content within the 80% safe zone (77px from each edge = safe area 38-154) -->
+  <rect width="192" height="192" fill="#4f46e5"/>
+  <rect x="36" y="48" width="120" height="76" rx="6" fill="none" stroke="white" stroke-width="7"/>
+  <line x1="76" y1="124" x2="66" y2="144" stroke="white" stroke-width="6" stroke-linecap="round"/>
+  <line x1="116" y1="124" x2="126" y2="144" stroke="white" stroke-width="6" stroke-linecap="round"/>
+  <text x="96" y="102" text-anchor="middle" font-family="sans-serif" font-weight="900" font-size="46" fill="white" letter-spacing="-2">AI</text>
+</svg>

@@ -1,0 +1,40 @@
+# ─── OS / editor junk ─────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+~$*.docx
+~$*.doc
+
+# ─── Secrets / environment ────────────────────────────────────────────────
+# Real per-environment config lives in .env / .env.local, never committed.
+# The .env.example templates ARE meant to be committed — explicitly un-ignored.
+.env
+.env.local
+.env.*.local
+!.env.example
+*.pem
+
+# ─── Backend (Python) ─────────────────────────────────────────────────────
+backend/.venv/
+**/__pycache__/
+*.pyc
+backend/*.db
+backend/test.db
+backend/dev.db
+backend/uploads/
+backend/db_backups/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# ─── Frontend (Node/Next.js) ──────────────────────────────────────────────
+# frontend/.gitignore already covers node_modules/.next/build/etc for
+# anything under frontend/ — this section is belt-and-suspenders for
+# commands run from the repo root.
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/*.tsbuildinfo
+npm-debug.log*
+
+# ─── Local scratch ─────────────────────────────────────────────────────────
+*.log

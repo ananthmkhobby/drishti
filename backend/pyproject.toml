@@ -1,0 +1,124 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aci-backend"
+version = "0.1.0"
+description = "AI Chalkboard Intelligence – FastAPI Backend"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+    "pydantic-settings>=2.3.0",
+    "python-multipart>=0.0.9",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "celery[redis]>=5.4.0",
+    "boto3>=1.34.0",
+    "aiofiles>=23.2.0",
+    # Image processing core (required for OCR preprocessing even without ML engines)
+    "opencv-python-headless>=4.9.0",
+    "numpy>=1.26.0",
+    # PDF text extraction for lesson plan uploads
+    "pdfplumber>=0.10.0",
+    # HTTP client for calling the local Ollama API (voice assistant intent parsing)
+    "httpx>=0.27.0",
+    # Deterministic arithmetic/algebra equivalence checking for ThinkStep
+    # guided practice (Gate D) — must run before any LLM call, not optional.
+    "sympy>=1.12",
+    # Lightweight (no ML weights, unlike paddleocr below) — used for
+    # cardinal-rotation (90/180/270°) photo-orientation correction ahead of
+    # both the guided-practice grading pipeline and the AI Tutor's vision
+    # calls (practice_engine.auto_orient). Moved out of the [ocr] extra
+    # (which the Dockerfile doesn't install) since this one specific use is
+    # core to guided practice, not an optional heavier OCR engine — still
+    # requires the `tesseract-ocr` system binary, which the Dockerfile's
+    # runtime stage already installs; auto_orient no-ops gracefully if
+    # either piece is missing (e.g. a Pi that hasn't installed it yet).
+    "pytesseract>=0.3.10",
+    "Pillow>=10.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+    "aiosqlite>=0.20.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.4.0",
+]
+
+# Heavier OCR engine — install with: pip install "aci-backend[ocr]"
+# PaddleOCR requires PaddlePaddle (a large ML dependency); the lightweight
+# pytesseract/Pillow pair now lives in core dependencies above instead
+# (needed unconditionally for photo-orientation correction, not just this
+# optional engine). Tesseract itself still needs the system binary:
+#   macOS:  brew install tesseract
+#   Ubuntu: apt-get install tesseract-ocr
+ocr = [
+    "paddlepaddle>=2.6.1",
+    "paddleocr>=2.8.0",
+]
+
+# AI generation — install with: pip install "aci-backend[ai]"
+# Requires OPENAI_API_KEY env var.  Without this group the service falls back
+# to placeholder outputs (useful for local dev and tests).
+ai = [
+    "openai>=1.30.0",
+]
+
+# Audience analysis — install with: pip install "aci-backend[audience]"
+# Requires deepface and tf-keras. DeepFace uses RetinaFace detector backend
+# for small/distant face detection in classroom settings.
+#   macOS:  brew install cmake  (for dlib / RetinaFace C++ build)
+#   Ubuntu: apt-get install cmake libopenblas-dev liblapack-dev
+audience = [
+    "deepface>=0.0.93",
+    "tf-keras>=2.15.0",
+]
+
+# Wake word ("Hey Drishti") — install with: pip install "aci-backend[wake-word]"
+# openWakeWord is free/open-source (no account, no review queue, unlike the
+# Picovoice Porcupine alternative this replaced). Only needed on the machine
+# with the actual microphone attached — normally just the Pi, not a dev
+# laptop. sounddevice needs the system PortAudio library:
+#   macOS:  brew install portaudio
+#   Debian/Raspberry Pi OS: apt-get install libportaudio2 portaudio19-dev
+#
+# openwakeword ITSELF is deliberately not listed here — its own packaging
+# unconditionally requires tflite-runtime on Linux even though
+# wake_word_service.py only ever uses its onnx backend, and tflite-runtime
+# has no published wheel for many current Python versions/architectures
+# (confirmed on this Pi's trixie image, 2026-09-11). These are openwakeword's
+# real runtime deps minus that one; install openwakeword itself with
+# --no-deps afterward (see deploy/wake-word-setup.sh) so pip never tries to
+# resolve tflite-runtime at all.
+wake-word = [
+    "sounddevice>=0.4.6",
+    "onnxruntime>=1.16.0,<2",
+    "tqdm>=4.0,<5.0",
+    "scipy>=1.3,<2",
+    "scikit-learn>=1,<2",
+    "requests>=2.0,<3",
+]
+
+# Install everything: pip install "aci-backend[ocr,ai,dev]"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

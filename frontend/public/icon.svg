@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="32" fill="#4f46e5"/>
+  <!-- Chalkboard outline -->
+  <rect x="28" y="40" width="136" height="88" rx="6" fill="none" stroke="white" stroke-width="8"/>
+  <!-- Board legs -->
+  <line x1="72" y1="128" x2="60" y2="152" stroke="white" stroke-width="7" stroke-linecap="round"/>
+  <line x1="120" y1="128" x2="132" y2="152" stroke="white" stroke-width="7" stroke-linecap="round"/>
+  <!-- "AI" text on board -->
+  <text x="96" y="102" text-anchor="middle" font-family="sans-serif" font-weight="900" font-size="52" fill="white" letter-spacing="-2">AI</text>
+</svg>

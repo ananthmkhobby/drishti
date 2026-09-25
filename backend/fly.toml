@@ -1,0 +1,62 @@
+# Fly.io deployment config — backend
+# Deploy: fly launch (first time) or fly deploy
+# Docs: https://fly.io/docs/reference/configuration/
+
+app = "aci-backend"
+primary_region = "sin"   # Singapore — change to nearest region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
+
+[env]
+  ENVIRONMENT = "production"
+  DEBUG = "false"
+  API_PREFIX = "/v1"
+  USE_S3 = "true"
+  AWS_REGION = "ap-south-1"
+
+# Secrets (set with: fly secrets set KEY=value)
+# DATABASE_URL        — Supabase/Neon/RDS postgres:// string
+# JWT_SECRET_KEY      — long random string
+# OPENAI_API_KEY      — for AI generation
+# AWS_ACCESS_KEY_ID
+# AWS_SECRET_ACCESS_KEY
+# S3_BUCKET
+# ALLOWED_ORIGINS     — https://your-vercel-app.vercel.app
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8000
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [services.checks]
+    [[services.checks]]
+      interval = "15s"
+      timeout = "10s"
+      grace_period = "30s"
+      method = "GET"
+      path = "/health"
