@@ -175,16 +175,28 @@ class PracticeAttemptResponse(BaseModel):
     recognized_steps: list | None
     recognition_confidence: float | None
     normalized_step: dict | None
+    diagram_context: str | None
     gate_d_result: dict | None
     validation_status: str | None
     validation_reason_code: str | None
     error_step_index: int | None
     misconception_code: str | None
     student_state: str | None
+    # Productive-struggle step, before Gate G's hint — see practice_service's
+    # counter_question wiring. counter_question is set on a first genuine
+    # mistake; hint_text stays null until student_explanation/
+    # explanation_outcome are filled in (via /explain or /skip-explanation).
+    counter_question: str | None
+    student_explanation: str | None
+    explanation_outcome: str | None
     hint_level: int | None
     hint_text: str | None
     post_hint_outcome: str | None
     latency_ms_breakdown: dict | None
+    # {"conceptual_error": str, "perfect_answer": list[str], "tip": str} —
+    # None until a student/teacher explicitly requests it (see
+    # POST /practice-attempts/{attempt_id}/review); never auto-populated.
+    review: dict | None
     teacher_override: dict | None
     teacher_feedback: str | None
     status: str
@@ -221,16 +233,21 @@ class PracticeAttemptResponse(BaseModel):
             recognized_steps=obj.recognized_steps,
             recognition_confidence=obj.recognition_confidence,
             normalized_step=obj.normalized_step,
+            diagram_context=obj.diagram_context,
             gate_d_result=obj.gate_d_result,
             validation_status=obj.validation_status,
             validation_reason_code=obj.validation_reason_code,
             error_step_index=obj.error_step_index,
             misconception_code=obj.misconception_code,
             student_state=obj.student_state,
+            counter_question=obj.counter_question,
+            student_explanation=obj.student_explanation,
+            explanation_outcome=obj.explanation_outcome,
             hint_level=obj.hint_level,
             hint_text=obj.hint_text,
             post_hint_outcome=obj.post_hint_outcome,
             latency_ms_breakdown=obj.latency_ms_breakdown,
+            review=obj.review,
             teacher_override=obj.teacher_override,
             teacher_feedback=obj.teacher_feedback,
             status=obj.status,
@@ -400,3 +417,44 @@ class TutorHistoryTurn(BaseModel):
 class PracticeTutorTurnResponse(BaseModel):
     transcript: str  # what the student's audio was heard as, for the UI to show
     reply: str
+
+
+# ─── Class Misconception Radar ──────────────────────────────────────────────
+
+
+class RadarDesk(BaseModel):
+    station_id: uuid.UUID
+    label: str
+
+
+class RadarAlertResponse(BaseModel):
+    id: uuid.UUID
+    question_id: uuid.UUID
+    question_text: str | None = None
+    topic: str | None = None
+    code: str
+    title: str
+    description: str | None = None
+    typical_work: str | None = None
+    desk_count: int
+    attempting_count: int
+    desks: list[RadarDesk]
+    status: str
+    created_at: datetime
+
+
+class RadarUnclassified(BaseModel):
+    question_id: uuid.UUID
+    question_text: str | None = None
+    desk_count: int
+
+
+class RadarResponse(BaseModel):
+    alerts: list[RadarAlertResponse]
+    # Desks stuck with no nameable misconception — shown for transparency,
+    # never alerted on.
+    unclassified: list[RadarUnclassified] = []
+
+
+class RadarAlertUpdate(BaseModel):
+    status: Literal["dismissed", "false_alarm", "acted"]

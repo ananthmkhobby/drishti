@@ -346,6 +346,48 @@ def encode_for_vision(img: np.ndarray, target_min_dim: int = 1024) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Subject normalization — shared by extraction (below) and validation
+# (practice_service.py's _build_validate_system_prompt). Lives here rather
+# than in practice_service.py since practice_service already depends on
+# this module, not the other way around — practice_service imports
+# _normalize_subject_key from here rather than duplicating it.
+# ---------------------------------------------------------------------------
+
+# Keyword match, not exact equality — question.subject is free text a
+# teacher typed or an LLM generated ("Math", "Maths", "Grade 8 Mathematics"),
+# never a closed enum. First match wins; order doesn't matter here since the
+# keyword sets don't overlap. "social science"/"social studies" included
+# under history — the common CBSE subject name that history questions are
+# actually filed under, not a standalone civics/geography specialization.
+_SUBJECT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "math": ("math",),  # matches math, maths, mathematics
+    "physics": ("physics",),
+    "chemistry": ("chemistry", "chemical"),
+    "history": ("history", "social science", "social studies"),
+    "language": (
+        "english", "hindi", "tamil", "telugu", "kannada", "malayalam",
+        "marathi", "gujarati", "punjabi", "bengali", "urdu", "sanskrit",
+        "french", "spanish", "german", "language", "grammar", "literature",
+    ),
+}
+
+
+def _normalize_subject_key(subject: str | None) -> str:
+    """Maps free-text question.subject to one of the specialized rubric/
+    extraction-addendum keys, or "other" (no addendum) for anything
+    unrecognized. "other" is a real, intended outcome for subjects without
+    a written specialization yet (biology, civics, geography, computer
+    science, ...), not a failure case."""
+    if not subject:
+        return "other"
+    s = subject.lower()
+    for key, keywords in _SUBJECT_KEYWORDS.items():
+        if any(kw in s for kw in keywords):
+            return key
+    return "other"
+
+
+# ---------------------------------------------------------------------------
 # Gates B/C — step extraction (OpenAI vision)
 # ---------------------------------------------------------------------------
 
@@ -365,7 +407,8 @@ Output ONLY a JSON object of this shape:
     {{"text": "<transcribed step, verbatim>", "bbox": [x1,y1,x2,y2], "confidence": <0-100 int>}}
   ],
   "overall_confidence": <0-100 int>,
-  "empty_reason": "<"none" if steps were found, otherwise "illegible" | "off_topic" | "blank">"
+  "empty_reason": "<"none" if steps were found, otherwise "illegible" | "off_topic" | "blank">",
+  "diagram_context": "<see rule below — a short factual description of the QUESTION's own labeled figure, or null>"
 }}
 
 bbox is [x1,y1,x2,y2] in a 0-1000 normalized coordinate space (top-left origin).
@@ -379,9 +422,16 @@ distinction between visually similar constructs — a superscript exponent (x²)
 NOT the same as a subscript (x₂) or a multiplication (x·2); an integral sign, a \
 summation, a partial-derivative ∂, a vector arrow, a Δ, and a → are all distinct \
 symbols with different meanings and must not be normalized into plain text that \
-loses that distinction. Where the handwritten form is genuinely ambiguous even at \
-full resolution, transcribe your best reading and let a LOWER per-step confidence \
-carry that uncertainty — don't silently pick whichever reading seems more \
+loses that distinction. This also covers: a limit expression (lim, with its \
+"approaches" subscript and target value) vs a bare fraction; the infinity \
+symbol ∞ vs a sideways 8 or the letter "x"; a matrix's bracket/row/column \
+layout (transcribe every entry in its actual position, don't collapse it to a \
+single line of numbers); degree (°) vs radian notation, and an angle name \
+(∠ABC) vs a plain letter; and the exact named polygon/shape drawn or labeled \
+(count vertices/sides rather than guessing from a common shape name). Where \
+the handwritten form is genuinely ambiguous even at full resolution, \
+transcribe your best reading and let a LOWER per-step confidence carry that \
+uncertainty — don't silently pick whichever reading seems more \
 "textbook-plausible" if the ink itself doesn't clearly support it.
 - Never invent steps that aren't actually written on the page.
 - Do not solve the question yourself or add any step the student didn't write.
@@ -394,7 +444,77 @@ THIS question — e.g. a different topic, an unrelated textbook page, or a \
 reference page rather than the student's own attempt. A recapture of the SAME \
 page won't fix this; the student needs to be looking at the right page/question.
   - "blank": the page is legible and clearly blank or has no attempt started yet.
+- "diagram_context": if the QUESTION ITSELF includes a labeled figure printed \
+or drawn on the page — a circuit, a geometric figure, a graph, a labeled \
+diagram — describe its labeled values/layout factually in one or two short \
+sentences (e.g. "Series circuit: 12V battery, R1=4Ω, R2=2Ω" or "Right \
+triangle, angle 30° at vertex B, hypotenuse 10cm"). This is about the \
+QUESTION's own figure, never the student's written work — those stay in \
+"steps" as usual, don't duplicate them here. Reason: a downstream grading \
+step only sees the transcribed text, never the photo itself — without this, \
+a diagram's own labeled values are invisible to it whenever the question's \
+own text doesn't happen to restate every value. Set this to null when the \
+page has no such figure, or when you're not confident enough in what its \
+labels actually say to state it as fact — a wrong "diagram_context" would \
+actively mislead grading, worse than leaving it null.
+{subject_addendum}\
 - Output ONLY the JSON object, no markdown fences, no other text."""
+
+# =============================================================================
+# Subject-specialized extraction guidance — what to pay EXTRA attention to
+# while TRANSCRIBING, distinct from practice_service.py's validation
+# addenda (which are about judging correctness AFTER transcription). Reuses
+# _normalize_subject_key/_SUBJECT_KEYWORDS above, so "Math"/"Maths"/
+# "Physics"/etc. route to the same subject bucket in both places. A
+# misread symbol defeats even a perfect validation rubric downstream, so
+# this exists as its own thing rather than folding into the extraction
+# prompt's one generic notation-fidelity bullet (added 2026-09-25).
+_MATH_EXTRACTION_ADDENDUM = (
+    "- Math-specific: look extra carefully at fraction bars vs division "
+    "signs, exponent/subscript placement, and degree (°) marks — these are "
+    "the constructs most often lost in a quick transcription. For a "
+    "matrix, transcribe EVERY entry in its row/column position, never "
+    "collapse it to a flat list of numbers.\n"
+)
+_PHYSICS_EXTRACTION_ADDENDUM = (
+    "- Physics-specific: transcribe unit symbols exactly as written (N, "
+    "kg, m/s², Ω, ...) — never drop a unit or guess one that wasn't "
+    "actually written. Preserve vector notation (an arrow or bold mark "
+    "over a variable) as distinct from the same letter used as a scalar. "
+    "Transcribe negative signs carefully — a physics sign error often "
+    "starts as a misread minus sign, not a real calculation mistake.\n"
+)
+_CHEMISTRY_EXTRACTION_ADDENDUM = (
+    "- Chemistry-specific: distinguish a SUBSCRIPT atom count (H₂O) from "
+    "a SUPERSCRIPT ionic charge (Na⁺) — these look similar in handwriting "
+    "but mean something completely different. Transcribe reaction arrows "
+    "exactly (→ one-way vs ⇌ reversible), any state symbols (s)/(l)/(g)/(aq) "
+    "if written, and coefficient placement in front of a formula (2H₂O, "
+    "not H₂O2).\n"
+)
+_HISTORY_EXTRACTION_ADDENDUM = (
+    "- History-specific: transcribe proper nouns — names, places, dates — "
+    "exactly as written, even if a name looks misspelled or a date looks "
+    "wrong to you. Do NOT silently \"correct\" it to the name/date you'd "
+    "expect; transcribe what's actually on the page and let a lower "
+    "confidence carry any genuine illegibility.\n"
+)
+_LANGUAGE_EXTRACTION_ADDENDUM = (
+    "- Language-specific: transcribe EXACTLY as written, including any "
+    "spelling, grammar, or punctuation errors the student actually made — "
+    "do NOT auto-correct or clean up their language. Getting this right "
+    "matters more here than for any other subject: grammar and spelling "
+    "correctness is literally what gets graded downstream, so \"fixing\" it "
+    "during transcription would make it impossible to grade accurately.\n"
+)
+
+_EXTRACTION_SUBJECT_ADDENDA: dict[str, str] = {
+    "math": _MATH_EXTRACTION_ADDENDUM,
+    "physics": _PHYSICS_EXTRACTION_ADDENDUM,
+    "chemistry": _CHEMISTRY_EXTRACTION_ADDENDUM,
+    "history": _HISTORY_EXTRACTION_ADDENDUM,
+    "language": _LANGUAGE_EXTRACTION_ADDENDUM,
+}
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -404,29 +524,37 @@ async def extract_steps(
     question_text: str,
     api_key: str,
     timeout_sec: int = 30,
+    subject: str | None = None,
 ) -> dict:
     """
     Returns {"steps": [{"text","bbox","confidence"}...], "overall_confidence": float 0-1}
     On any failure returns {"steps": [], "overall_confidence": 0.0, "error": "..."}
     — caller (Gate B) treats overall_confidence 0 the same as "recapture needed",
     never as "student wrote nothing wrong".
+
+    subject (question.subject, free text) selects an extraction addendum —
+    what to pay EXTRA attention to while transcribing THIS subject's
+    notation — via the same _normalize_subject_key routing
+    practice_service.py's validation rubrics use. None/unrecognized is a
+    real, intended outcome (no addendum, base prompt only), not a failure.
     """
     if not api_key:
-        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "error": "no_api_key"}
+        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "diagram_context": None, "error": "no_api_key"}
 
     try:
         from openai import AsyncOpenAI
     except ImportError:
-        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "error": "openai_client_unavailable"}
+        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "diagram_context": None, "error": "openai_client_unavailable"}
 
     try:
         b64 = encode_for_vision(image_bgr)
     except Exception as exc:
         logger.warning("Practice step extraction: encode failed: %s", exc)
-        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "error": "encode_failed"}
+        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "diagram_context": None, "error": "encode_failed"}
 
     client = AsyncOpenAI(api_key=api_key)
-    prompt = _STEP_EXTRACTION_PROMPT.format(question_text=question_text[:1000])
+    subject_addendum = _EXTRACTION_SUBJECT_ADDENDA.get(_normalize_subject_key(subject), "")
+    prompt = _STEP_EXTRACTION_PROMPT.format(question_text=question_text[:1000], subject_addendum=subject_addendum)
 
     try:
         resp = await client.chat.completions.create(
@@ -456,16 +584,16 @@ async def extract_steps(
         content = resp.choices[0].message.content or ""
     except Exception as exc:
         logger.warning("Practice step extraction: vision call failed: %s", exc)
-        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "error": str(exc)}
+        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "diagram_context": None, "error": str(exc)}
 
     match = _JSON_BLOCK.search(content)
     if not match:
-        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "error": "no_json_in_response"}
+        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "diagram_context": None, "error": "no_json_in_response"}
 
     try:
         data = json.loads(match.group(0))
     except (json.JSONDecodeError, ValueError):
-        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "error": "invalid_json"}
+        return {"steps": [], "overall_confidence": 0.0, "empty_reason": "error", "diagram_context": None, "error": "invalid_json"}
 
     raw_steps = data.get("steps") or []
     steps = []
@@ -492,7 +620,13 @@ async def extract_steps(
     if empty_reason not in ("none", "illegible", "off_topic", "blank", "error"):
         empty_reason = "illegible"  # unrecognized value — fail toward "ask for a recapture", not silence
 
-    return {"steps": steps, "overall_confidence": round(overall, 3), "empty_reason": empty_reason}
+    diagram_context = data.get("diagram_context")
+    diagram_context = str(diagram_context).strip() if diagram_context else None
+
+    return {
+        "steps": steps, "overall_confidence": round(overall, 3), "empty_reason": empty_reason,
+        "diagram_context": diagram_context,
+    }
 
 
 # ---------------------------------------------------------------------------

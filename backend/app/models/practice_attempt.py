@@ -59,6 +59,19 @@ class PracticeAttempt(Base):
     recognized_steps: Mapped[list | None] = mapped_column(_JsonType, nullable=True)
     recognition_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     normalized_step: Mapped[dict | None] = mapped_column(_JsonType, nullable=True)
+    # A short factual description of the QUESTION's own labeled figure
+    # (circuit, geometric diagram, graph, ...), read off the same photo as
+    # recognized_steps — never the student's own work, that stays in
+    # recognized_steps. Added 2026-09-30: validate_step only ever sees
+    # transcribed text, never the photo itself, so a diagram's own labeled
+    # values (a circuit's resistor values, a triangle's angle) were
+    # invisible to grading whenever the question's own text didn't happen
+    # to restate every value — confirmed live: with sparse question
+    # metadata, grading correctly caught a wrong final answer but couldn't
+    # diagnose WHY once nothing else in its context mentioned the value
+    # that was actually being ignored. Null for audio attempts, and for
+    # image attempts with no diagram (the common case).
+    diagram_context: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Gate D
     gate_d_result: Mapped[dict | None] = mapped_column(_JsonType, nullable=True)
@@ -76,6 +89,23 @@ class PracticeAttempt(Base):
     # progressing | uncertain | stuck | misconception | ambiguous | teacher_required
     student_state: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
+    # Counter-question — a "productive struggle" step BEFORE Gate G's hint,
+    # only on a student's FIRST genuine mistake on a question (help_streak
+    # transitioning 0->1). Asks the student to explain their own reasoning
+    # rather than immediately handing them a hint — the NBER field-
+    # experiment finding this implements: AI should intervene after a
+    # mistake by first prompting reflection, not by immediately being more
+    # helpful. Repeated mistakes on the same question skip straight to the
+    # normal L1-L4 hint ladder — re-asking a question that didn't resolve
+    # things once already reads as repetitive, not supportive.
+    counter_question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Transcribed from the student's spoken response to counter_question —
+    # set once they've answered (or explicitly skipped, see below).
+    student_explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # self_corrected | confirmed_misconception | unclear | skipped | null
+    # (null = counter_question was asked but not yet answered)
+    explanation_outcome: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
     # Gates G/H
     hint_level: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0 (silence) - 5 (teacher handoff)
     hint_text: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -83,6 +113,18 @@ class PracticeAttempt(Base):
     post_hint_outcome: Mapped[str | None] = mapped_column(String(30), nullable=True)  # resolved | still_stuck | escalated_to_teacher
 
     latency_ms_breakdown: Mapped[dict | None] = mapped_column(_JsonType, nullable=True)
+
+    # Generated on demand (not automatically — see practice_service.
+    # generate_attempt_review) once a student/teacher asks to see the full
+    # correction: {"conceptual_error": str, "perfect_answer": list[str],
+    # "tip": str}. Deliberately separate from hint_text/Gates G/H — hints
+    # are guard-railed to NEVER reveal the final answer while a student is
+    # still actively working (see check_hint_leakage); this is the opposite
+    # intent, a post-hoc "here's what you missed and what a full answer
+    # looks like" review, so it must never be shown during in-progress
+    # hinting, only alongside a finished attempt. Cached here once generated
+    # so re-opening the same attempt's review doesn't re-call the LLM.
+    review: Mapped[dict | None] = mapped_column(_JsonType, nullable=True)
 
     teacher_override: Mapped[dict | None] = mapped_column(_JsonType, nullable=True)
     teacher_feedback: Mapped[str | None] = mapped_column(String(20), nullable=True)  # approve | reject

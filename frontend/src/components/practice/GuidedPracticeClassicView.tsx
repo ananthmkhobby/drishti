@@ -20,6 +20,7 @@ import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { CameraSnapButton } from "@/components/practice/CameraSnapButton";
+import { ClassRadar } from "@/components/practice/ClassRadar";
 import { VoiceDictateButton } from "@/components/practice/VoiceDictateButton";
 import { VoiceAnswerButton } from "@/components/practice/VoiceAnswerButton";
 import { HandDrawnCircle } from "@/components/practice/HandDrawnCircle";
@@ -1038,6 +1039,8 @@ export function GuidedPracticeClassicView(p: GuidedPracticeViewProps) {
           </div>
         </div>
       )}
+
+      {stations.length > 0 && <ClassRadar sessionId={sessionId} />}
 
       {stations.length > 0 && <TriageSummary stations={stations} t={t} />}
 

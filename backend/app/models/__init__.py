@@ -24,6 +24,8 @@ from app.models.practice_question import PracticeQuestion
 from app.models.practice_station import PracticeStation
 from app.models.practice_attempt import PracticeAttempt
 from app.models.practice_attempt_summary import PracticeAttemptSummary
+from app.models.misconception import Misconception
+from app.models.practice_radar_alert import PracticeRadarAlert
 from app.models.practice_tutor_message import PracticeTutorMessage
 from app.models.textbook import Textbook, TextbookChapter, TextbookFigure
 
@@ -54,6 +56,8 @@ __all__ = [
     "PracticeStation",
     "PracticeAttempt",
     "PracticeAttemptSummary",
+    "Misconception",
+    "PracticeRadarAlert",
     "PracticeTutorMessage",
     "Textbook",
     "TextbookChapter",

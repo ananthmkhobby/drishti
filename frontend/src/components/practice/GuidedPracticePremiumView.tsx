@@ -22,6 +22,7 @@ import { api, getPracticeAttemptImageUrl, getPracticeAttemptAudioUrl } from "@/l
 import type { PracticeQuestion, PracticeAttempt, PracticeStation, BatchScanResponse, CameraMount, PracticeAttemptSummary } from "@/lib/api";
 import { CameraSnapButton } from "@/components/practice/CameraSnapButton";
 import { BrainNudge } from "@/components/practice/BrainNudge";
+import { ClassRadar } from "@/components/practice/ClassRadar";
 import { VoiceDictateButton } from "@/components/practice/VoiceDictateButton";
 import { VoiceAnswerButton } from "@/components/practice/VoiceAnswerButton";
 import { HandDrawnCircle } from "@/components/practice/HandDrawnCircle";
@@ -901,6 +902,8 @@ export function GuidedPracticePremiumView(p: GuidedPracticeViewProps) {
       )}
 
       {approved.length > 0 && <BatchScanPanel sessionId={sessionId} approved={approved} onScanned={() => mutateStations()} />}
+
+      {stations.length > 0 && <ClassRadar sessionId={sessionId} />}
 
       {stations.length > 0 && <BrainNudge stations={stations} t={t} />}
 

@@ -30,7 +30,8 @@ from app.models.practice_station import PracticeStation
 from app.models.practice_tutor_message import PracticeTutorMessage
 from app.models.session import Session
 from app.ocr import practice_engine
-from app.services import storage_service
+from app.ocr.practice_engine import _normalize_subject_key
+from app.services import storage_service, misconception_library
 from app.services.whisper_service import transcribe as whisper_transcribe
 
 logger = logging.getLogger(__name__)
@@ -380,7 +381,7 @@ Output ONLY a JSON object:
 {
   "validation_status": "<one of the categories above>",
   "error_step_index": <integer index of the step where the error first appears, or null if there is no error to point at>,
-  "misconception_code": "<code from known_misconceptions if conceptual_misconception, else null>",
+  "misconception_code": "<a code from the question's known misconceptions or the library list given to you — ONLY those, never invent one — if conceptual_misconception and one genuinely fits; else null>",
   "reason_code": "<short machine-friendly snake_case reason>",
   "confidence": <0-100 int, your certainty in this classification>,
   "column_hint": {"row": "operand_1"|"operand_2"|"answer"|"carry", "column": "ones"|"tens"|"hundreds"|"thousands"|"tenths"|"hundredths"} or null
@@ -398,13 +399,220 @@ whatever it covers (including its own step_index AND its own column_hint, \
 if it has one) and do not contradict it.
 - Output ONLY the JSON object, no markdown fences, no other text."""
 
+# =============================================================================
+# Subject-specialized grading rubrics — appended to _VALIDATE_SYSTEM_PROMPT
+# =============================================================================
+# The base prompt above already leans STEM (dimensional consistency, sign
+# conventions, JEE-level rigor) but never actually tells the model WHICH
+# subject it's grading, and applies the exact same rubric to an English
+# composition as to a physics numerical. Each addendum below adds the
+# judgment criteria an actual subject specialist would apply, WITHOUT
+# changing the shared validation_status taxonomy every other gate/hint/
+# review feature already depends on — a grammar mistake still resolves to
+# "conceptual_misconception"/"incomplete"/etc., it's the REASONING that
+# gets subject-appropriate, not the output shape.
+
+_MATH_RUBRIC_ADDENDUM = """
+
+SUBJECT SPECIALIZATION: Mathematics. Grade with a mathematics examiner's eye
+for notation and structure, not just the final numeric answer:
+- Symbol/notation correctness matters as much as the number: a ratio written
+  as a fraction when the question asks for ratio form (or vice versa), a
+  percentage left as a raw decimal, a wrong angle unit (degrees vs radians,
+  or a bare number with no ° where one is required) are real errors, not
+  presentation nitpicks — but don't penalize an equivalent, unambiguous
+  notation choice the question itself didn't constrain.
+- Shape/polygon vocabulary must match the actual figure: verify the named
+  shape's vertex/side count against what's described or drawn (triangle=3,
+  quadrilateral=4, pentagon=5, hexagon=6, ... up to icosagon=20, and beyond
+  that as "n-gon") — naming a hexagon a "pentagon" is a conceptual_misconception,
+  not a rounding-level slip.
+- Calculus/advanced notation: distinguish an integral (∫...dx) from a bare
+  antiderivative expression missing its dx, a derivative (d/dx, f') from a
+  differential, and a limit (lim) that's stated but never actually evaluated
+  as the variable approaches its target — each of these is a distinct
+  operation with a distinct correct form, and using the wrong one (or
+  invoking ∞ without actually reasoning about the limiting behavior) is a
+  conceptual error even when the surrounding algebra is otherwise fine.
+- Matrices: check dimensions are compatible for the operation attempted
+  (can't add/multiply mismatched shapes) before checking the arithmetic
+  inside them — a dimension mismatch is the root-cause error, not whatever
+  numbers happen to be written down after it.
+- A numeric final answer must match exactly (or within a stated tolerance)
+  — "close" is not correct unless the question explicitly allows rounding."""
+
+_PHYSICS_RUBRIC_ADDENDUM = """
+
+SUBJECT SPECIALIZATION: Physics. Grade with a physics examiner's eye for
+units, laws, and physical plausibility, not just symbol manipulation:
+- Units are mandatory on any quantity that has them — a numerically correct
+  magnitude with a missing or wrong unit (or an equation that doesn't
+  balance dimensionally) is arithmetic_slip or conceptual_misconception,
+  never valid_progress, even if every other step is right.
+- Identify which LAW or formula the situation actually calls for (Newton's
+  laws, conservation of energy/momentum, the relevant circuit law, etc.)
+  before checking the arithmetic — applying a formula that's dimensionally
+  consistent but the WRONG law for this scenario is a conceptual_misconception,
+  not a valid alternative method, unless it's a genuinely equivalent approach.
+- Sign conventions carry physical meaning: direction of force/velocity/
+  current, a reference frame, exothermic vs endothermic — a flipped sign
+  that changes what's physically being claimed is a real error, not a
+  presentation choice.
+- Sanity-check the final answer against physical plausibility (a human
+  moving faster than light, a negative absolute temperature, a resistance
+  that would draw an absurd current) — a physically impossible result
+  means an earlier step is wrong even if that step's algebra looked locally
+  valid; flag the earliest step that introduced the impossibility."""
+
+_LANGUAGE_RUBRIC_ADDENDUM = """
+
+SUBJECT SPECIALIZATION: Language (English or any other language subject —
+Hindi, Tamil, French, etc.; none of the criteria below are English-specific).
+Grade with a language examiner's eye for mechanics AND content — these are
+separate dimensions, weigh them as the question actually calls for:
+- Grammar: subject-verb agreement, tense consistency within a passage,
+  complete sentences (a fragment or run-on is a real error unless clearly
+  an intentional stylistic choice the question invites).
+- Punctuation: terminal punctuation, comma usage in lists/clauses, correct
+  apostrophe use (possessive "its" vs contraction "it's"), quotation marks
+  around direct speech/quoted text.
+- Spelling: flag a word that's clearly misspelled AS WRITTEN — but stay
+  lenient about handwriting-recognition uncertainty; if the transcription
+  itself might be an OCR misread rather than the student's actual spelling,
+  don't confidently call it a spelling error.
+- Tone/register: check the response matches what the question specifies
+  (a formal letter vs an informal narrative vs a persuasive essay) — a
+  clear register mismatch (casual slang in a formal-letter question) is a
+  real error when the question specifies the register, not a style nitpick.
+- Keep mechanics and content separate in your judgment: a mechanically
+  imperfect answer that clearly conveys the correct, complete idea the
+  question asks for should generally still be "valid_progress"/"solved"
+  with the mechanical issues noted via reason_code — only let mechanics
+  alone drive the status down to conceptual_misconception/incomplete when
+  the question is SPECIFICALLY testing grammar/punctuation/writing
+  mechanics, not just using the language to express a content-based answer."""
+
+_CHEMISTRY_RUBRIC_ADDENDUM = """
+
+SUBJECT SPECIALIZATION: Chemistry. Grade with a chemistry examiner's eye
+for equations, formulas, and reaction correctness, not just whether the
+right substances are named:
+- A chemical equation must be BALANCED — the same count of each atom on
+  both sides — before anything else is checked; an unbalanced equation is
+  a real error even when the reactants/products themselves are correct.
+- A chemical formula's subscripts must reflect correct valency/ionic
+  charge-balancing — a plausible-looking formula whose charges don't
+  actually balance is a conceptual_misconception, not a typo.
+- State symbols (s)/(l)/(g)/(aq), when the question or accepted answer
+  includes them, are part of a complete correct answer, not optional detail.
+- Identify the reaction TYPE correctly (combination, decomposition,
+  displacement, double displacement/precipitation, redox, acid-base/
+  neutralization) — a correctly-balanced equation with the wrong reaction
+  type named is still a conceptual_misconception.
+- A reversible-reaction arrow (⇌) is not interchangeable with a one-way
+  arrow (→) — using the wrong one changes the chemistry being claimed.
+- For quantitative chemistry (moles, molarity, concentration, stoichiometric
+  ratios), apply the same unit-and-magnitude rigor a physics answer would
+  get — a numerically plausible answer with the wrong unit, or a
+  stoichiometric ratio that doesn't match the balanced equation, is wrong."""
+
+_HISTORY_RUBRIC_ADDENDUM = """
+
+SUBJECT SPECIALIZATION: History/Social Studies. There's no calculation to
+check here — grade with a history examiner's eye for factual accuracy and
+reasoning, applying the base prompt's "conceptual" rigor (the explanation
+must cover the actual required events/causal links, not just be generally
+on-topic) with these specifics:
+- Facts must be correct: names, dates, sequence of events, and who-did-what
+  — a plausible-sounding but factually wrong claim (wrong date, wrong
+  person, events in the wrong order) is a conceptual_misconception, not a
+  minor style issue.
+- Distinguish cause from effect from mere correlation — naming a genuine
+  contributing cause is different from naming a consequence, or an
+  unrelated coincidence, as if it were the cause; conflating them is a real
+  reasoning error, not a phrasing choice.
+- Don't reward anachronism — attributing a later period's technology,
+  ideas, or institutions to an earlier one (or vice versa) is a factual
+  error even when the surrounding argument otherwise reads coherently.
+- Multiple valid historiographical interpretations can exist for "why"/
+  "significance" questions — an answer taking a different but genuinely
+  well-supported interpretive stance than the accepted-solution graph's own
+  framing is alternative_valid_method, not wrong, PROVIDED it's actually
+  backed by real evidence/reasoning rather than just asserted.
+- A confidently-written answer built on an incorrect fact, or one that
+  asserts a claim with no supporting reasoning at all, is still
+  incomplete/conceptual_misconception — don't grade on fluency or
+  confidence of tone."""
+
+_SUBJECT_RUBRIC_ADDENDA: dict[str, str] = {
+    "math": _MATH_RUBRIC_ADDENDUM,
+    "physics": _PHYSICS_RUBRIC_ADDENDUM,
+    "chemistry": _CHEMISTRY_RUBRIC_ADDENDUM,
+    "history": _HISTORY_RUBRIC_ADDENDUM,
+    "language": _LANGUAGE_RUBRIC_ADDENDUM,
+}
+
+# _normalize_subject_key/_SUBJECT_KEYWORDS live in practice_engine.py now,
+# shared with its own extraction-addenda routing (added 2026-09-30) — this
+# module already depends on practice_engine, so importing from there avoids
+# duplicating the keyword table in two places that could drift apart.
+
+
+# Grade calibration. The base prompt's "competitive-exam (JEE/IIT) rigor"
+# line is right for senior-secondary work and WRONG for a Grade 2 child, so
+# the early/middle addenda explicitly scope it down. Added 2026-10-27.
+_GRADE_ADDENDA: dict[str, str] = {
+    "early": """
+
+GRADE CALIBRATION: Grades 1-3 (ages 6-9). The "competitive-exam rigor" \
+instruction above does NOT apply to this student — grade against what a \
+good Grade 1-3 answer looks like:
+- Concrete and informal methods are valid: counting on, drawing, tally marks, \
+number lines, words instead of symbols. Do not demand formal notation.
+- Letter or digit reversals (b/d, p/q, a backwards 3 or 7), uneven spacing, and \
+phonetic spelling are developmental handwriting/spelling features, not \
+conceptual errors — never classify them as conceptual_misconception, and \
+transcription-level ambiguity should push toward "ambiguous", not an accusation.
+- Judge the idea, not the presentation. Prefer "valid_progress" or "incomplete" \
+over an error call when the work is simply immature but heading the right way.""",
+    "middle": """
+
+GRADE CALIBRATION: Grades 4-7 (ages 9-13). The "competitive-exam rigor" \
+instruction above is scaled down for this student: expect correct method and \
+units where the curriculum introduces them, but accept informal reasoning and \
+do not require senior-secondary formalism (limits, vectors, strict domain \
+analysis). Distinguish a careless slip from a systematic misconception — a \
+pattern repeated across steps is a misconception; a single wrong digit is a slip.""",
+    "senior": "",  # Grades 8-10: the base rigor applies as written.
+}
+
+
+def _build_validate_system_prompt(subject: str | None, grade_band: str | None = None) -> str:
+    return (
+        _VALIDATE_SYSTEM_PROMPT
+        + _SUBJECT_RUBRIC_ADDENDA.get(_normalize_subject_key(subject), "")
+        + _GRADE_ADDENDA.get(grade_band or "", "")
+    )
+
 
 def _build_validate_prompt(
     question: PracticeQuestion,
     recognized_steps: list[dict],
     gate_d_result: dict | None,
+    diagram_context: str | None = None,
+    library_misconceptions: list[dict] | None = None,
 ) -> str:
-    lines = [f"Question: {question.text}", f"Answer domain: {question.answer_domain}"]
+    lines = [
+        f"Question: {question.text}",
+        f"Subject: {question.subject or '(not specified)'}",
+        f"Answer domain: {question.answer_domain}",
+    ]
+    if diagram_context:
+        lines.append(
+            f"The question includes a labeled figure — read from the same "
+            f"photo as the student's steps below, describing the QUESTION's "
+            f"own figure, not anything the student wrote: {diagram_context}"
+        )
     if question.final_answer:
         lines.append(
             f"Final answer — check explicitly whether the student's steps actually "
@@ -424,6 +632,13 @@ def _build_validate_prompt(
         lines.append(f"Accepted solution graph: {json.dumps(question.expected_solution_graph)[:2000]}")
     if question.known_misconceptions:
         lines.append(f"Known misconceptions: {json.dumps(question.known_misconceptions)[:1000]}")
+    if library_misconceptions:
+        lines.append(
+            "Library misconceptions for this subject/grade/topic (research-based; use one of "
+            "these codes for misconception_code only if it genuinely matches what the student "
+            "wrote — otherwise null): "
+            + json.dumps(library_misconceptions)[:2500]
+        )
     numbered_steps = [f"{i}: {s.get('text')}" for i, s in enumerate(recognized_steps)]
     lines.append("Student's recognized steps, numbered in order:\n" + "\n".join(numbered_steps))
     if gate_d_result:
@@ -431,7 +646,7 @@ def _build_validate_prompt(
     return "\n".join(lines)
 
 
-async def _validate_local(prompt: str, base_url: str, model: str, timeout: int) -> dict | None:
+async def _validate_local(prompt: str, base_url: str, model: str, timeout: int, system_prompt: str = _VALIDATE_SYSTEM_PROMPT) -> dict | None:
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
@@ -439,7 +654,7 @@ async def _validate_local(prompt: str, base_url: str, model: str, timeout: int) 
                 json={
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": _VALIDATE_SYSTEM_PROMPT},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt},
                     ],
                     "stream": False,
@@ -455,7 +670,7 @@ async def _validate_local(prompt: str, base_url: str, model: str, timeout: int) 
     return _extract_json(content)
 
 
-async def _validate_cloud(prompt: str, api_key: str, timeout: int) -> dict | None:
+async def _validate_cloud(prompt: str, api_key: str, timeout: int, system_prompt: str = _VALIDATE_SYSTEM_PROMPT) -> dict | None:
     try:
         from openai import AsyncOpenAI
     except ImportError:
@@ -467,7 +682,7 @@ async def _validate_cloud(prompt: str, api_key: str, timeout: int) -> dict | Non
             temperature=0,
             timeout=timeout,
             messages=[
-                {"role": "system", "content": _VALIDATE_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -477,6 +692,8 @@ async def _validate_cloud(prompt: str, api_key: str, timeout: int) -> dict | Non
         return None
     return _extract_json(content)
 
+
+_DEVELOPMENTAL_CODES = {"L-SPELL-01"}
 
 _VALID_STATUSES = {
     "solved", "valid_progress", "alternative_valid_method", "incomplete",
@@ -517,11 +734,21 @@ async def validate_step(
     openai_api_key: str,
     local_enabled: bool,
     timeout_sec: int = 30,
+    diagram_context: str | None = None,
+    grade_band: str | None = None,
+    library_misconceptions: list[dict] | None = None,
 ) -> dict:
     """
     Gates E/F combined. Returns {"validation_status", "error_step_index",
     "misconception_code", "reason_code", "confidence" (0-1),
     "source": "deterministic"|"local"|"cloud"|"none", "column_hint"}.
+
+    diagram_context (from extract_steps — see practice_engine.py) describes
+    the QUESTION's own labeled figure, if any. Without it, a diagram's
+    values are invisible to this function whenever question.text/
+    final_answer/known_misconceptions don't happen to restate them —
+    confirmed live (2026-09-30) to degrade a correct "wrong answer" catch
+    into a correct-but-unexplained one once those fields were sparse.
 
     A Gate D verdict of "arithmetic_error" short-circuits straight to
     arithmetic_slip without an LLM call at all — the PRD requires Gate D
@@ -548,12 +775,13 @@ async def validate_step(
         # accepted approaches) — still route through the LLM, but hand it
         # the Gate D result so it knows the arithmetic itself already checks out.
 
-    prompt = _build_validate_prompt(question, recognized_steps, gate_d_result)
+    prompt = _build_validate_prompt(question, recognized_steps, gate_d_result, diagram_context, library_misconceptions)
+    system_prompt = _build_validate_system_prompt(question.subject, grade_band)
 
-    result = await _validate_local(prompt, ollama_base_url, ollama_model, timeout_sec) if local_enabled else None
+    result = await _validate_local(prompt, ollama_base_url, ollama_model, timeout_sec, system_prompt) if local_enabled else None
     source = "local"
     if result is None and openai_api_key:
-        result = await _validate_cloud(prompt, openai_api_key, timeout_sec)
+        result = await _validate_cloud(prompt, openai_api_key, timeout_sec, system_prompt)
         source = "cloud"
     if result is None:
         return {
@@ -582,6 +810,28 @@ async def validate_step(
     misconception_code = result.get("misconception_code")
     if status != "conceptual_misconception":
         misconception_code = None
+    elif misconception_code:
+        # Controlled vocabulary: only a code the question itself lists or the
+        # library offered is kept. An invented code is dropped to null (the
+        # reason_code still says what went wrong) rather than polluting
+        # aggregation with a label that exists nowhere else.
+        allowed = {m.get("code") for m in (question.known_misconceptions or []) if isinstance(m, dict)}
+        allowed |= {m.get("code") for m in (library_misconceptions or [])}
+        if allowed and misconception_code not in allowed:
+            misconception_code = None
+
+    # Early-grade developmental guard: phonetic spelling and letter/digit
+    # reversals at Grades 1-3 are expected development, not a concept error.
+    # The prompt says so, but the first eval run (2026-10-27) showed the model
+    # still labelled a Grade 2 "pupy" a conceptual_misconception — a false
+    # accusation against a 7-year-old — so this is enforced in code, not
+    # left to the prompt.
+    if (
+        grade_band == "early" and status == "conceptual_misconception"
+        and (misconception_code in _DEVELOPMENTAL_CODES or "spell" in (reason or "").lower()
+             or "revers" in (reason or "").lower())
+    ):
+        status, misconception_code, reason = "valid_progress", None, "developmental_spelling_or_reversal"
 
     # Only meaningful for statuses that ARE an error to point at — a step
     # index attached to "valid_progress"/"incomplete"/"ambiguous" would be
@@ -845,6 +1095,233 @@ async def check_hint_leakage(
     return bool(result.get("leaks_answer", True))
 
 
+async def generate_safe_hint(
+    question: PracticeQuestion,
+    hint_level: int,
+    validation: dict,
+    *,
+    ollama_base_url: str,
+    ollama_model: str,
+    openai_api_key: str,
+    local_enabled: bool,
+) -> tuple[str, int]:
+    """Shared by process_attempt's Gate G and the counter-question /explain
+    endpoint's follow-up hint — generate + leakage-check + fall back to a
+    safe generic hint on any failure/leak, exactly once, in one place.
+    Returns (hint_text, effective_hint_level) — effective_hint_level is
+    hint_level unchanged, or 1 if a leak/failure forced the generic fallback."""
+    hint = await generate_hint(
+        question, hint_level, validation,
+        ollama_base_url=ollama_base_url, ollama_model=ollama_model,
+        openai_api_key=openai_api_key, local_enabled=local_enabled,
+    )
+    leaked = await check_hint_leakage(
+        question, hint["hint_text"],
+        ollama_base_url=ollama_base_url, ollama_model=ollama_model,
+        openai_api_key=openai_api_key, local_enabled=local_enabled,
+    )
+    if leaked or not hint["hint_text"]:
+        return "Try re-checking your last step against what the question is asking.", 1
+    return hint["hint_text"], hint_level
+
+
+# =============================================================================
+# Counter-question — the "productive struggle" step BEFORE Gate G's hint
+# =============================================================================
+# Implements the NBER field-experiment finding (6,000+ middle-school
+# students): AI support is most effective when it intervenes with a
+# reflection prompt right after a mistake, not by immediately becoming more
+# helpful — asking a student to explain their own reasoning first, before
+# any hint, measurably improved recovery on the next attempt. Only fires on
+# a student's FIRST genuine mistake on a question (see process_attempt);
+# repeated mistakes go straight to the normal L1-L4 hint ladder.
+
+_COUNTER_QUESTION_SYSTEM_PROMPT = """You write ONE short question that asks a \
+student to explain their OWN reasoning at the exact step where they just made \
+a mistake — this is the FIRST response to a genuine mistake, asked BEFORE any \
+hint, not a hint itself.
+
+RULES:
+- Ask about WHAT they did or WHY, never whether it's right — e.g. "What \
+identity did you use to expand that?" or "Walk me through how you got that \
+number." Never phrase it in a way that hints at the mistake (asking "are you \
+sure that's the right formula" already reveals their formula choice is the \
+problem — don't do this).
+- Reference their actual written step, not a generic prompt.
+- Never state or imply the correct answer, method, or what's wrong with theirs.
+- One short, natural-sounding question — a student will hear this read aloud.
+
+Output ONLY a JSON object: {"counter_question": "<the question>"}
+Output ONLY the JSON object, no markdown fences, no other text."""
+
+
+async def generate_counter_question(
+    question: PracticeQuestion,
+    error_step_text: str,
+    *,
+    ollama_base_url: str,
+    ollama_model: str,
+    openai_api_key: str,
+    local_enabled: bool,
+    timeout_sec: int = 20,
+) -> dict:
+    """Returns {"counter_question": str, "source": str}. An empty
+    counter_question (LLM unavailable/malformed) is the caller's signal to
+    fall back to an ordinary hint instead — a missing question shouldn't
+    leave the student with nothing."""
+    user_prompt = (
+        f"Question: {question.text}\n"
+        f"The student's step where the mistake was made: {error_step_text}"
+    )
+    result, source = await _llm_call(
+        _COUNTER_QUESTION_SYSTEM_PROMPT, user_prompt,
+        ollama_base_url=ollama_base_url, ollama_model=ollama_model,
+        openai_api_key=openai_api_key, local_enabled=local_enabled, timeout_sec=timeout_sec,
+    )
+    counter_question = (result or {}).get("counter_question", "").strip() if result else ""
+    return {"counter_question": counter_question, "source": source}
+
+
+_EXPLANATION_PROBE_SYSTEM_PROMPT = """A student made a mistake on a step of a \
+guided-practice question and was asked to explain their own reasoning before \
+getting any hint. Given their spoken explanation (transcribed below), decide \
+whether they've now recognized the mistake themselves, or whether their \
+explanation still reflects the same incorrect reasoning.
+
+Classify into EXACTLY one of:
+- "self_corrected": their explanation shows they've now identified something \
+is wrong with what they did (even if they haven't fixed it on paper yet) — \
+they should be encouraged to try again themselves, not handed a hint.
+- "confirmed_misconception": their explanation still reflects the same \
+incorrect reasoning, or doesn't engage with the mistake at all — they need \
+an actual hint now.
+- "unclear": genuinely can't tell (silence, off-topic, too vague to judge) — \
+treat the same as confirmed_misconception (give a hint), just logged separately.
+
+Output ONLY a JSON object:
+{"outcome": "self_corrected"|"confirmed_misconception"|"unclear", \
+"encouragement": "<if self_corrected: ONE short encouraging sentence inviting \
+them to try again, referencing what they just said if natural — never state \
+the correct answer/method. If confirmed_misconception/unclear: empty string, \
+a real hint is generated separately for those cases>"}
+Output ONLY the JSON object, no markdown fences, no other text."""
+
+
+async def evaluate_explanation(
+    question: PracticeQuestion,
+    counter_question: str,
+    student_explanation: str,
+    *,
+    ollama_base_url: str,
+    ollama_model: str,
+    openai_api_key: str,
+    local_enabled: bool,
+    timeout_sec: int = 20,
+) -> dict:
+    """Returns {"outcome": "self_corrected"|"confirmed_misconception"|"unclear", "encouragement": str}."""
+    if not student_explanation.strip():
+        return {"outcome": "unclear", "encouragement": ""}
+    user_prompt = (
+        f"Question: {question.text}\n"
+        f"They were asked: {counter_question}\n"
+        f"Their spoken explanation: {student_explanation}"
+    )
+    result, source = await _llm_call(
+        _EXPLANATION_PROBE_SYSTEM_PROMPT, user_prompt,
+        ollama_base_url=ollama_base_url, ollama_model=ollama_model,
+        openai_api_key=openai_api_key, local_enabled=local_enabled, timeout_sec=timeout_sec,
+    )
+    if not result:
+        logger.warning("Explanation probe unavailable (source=%s) — treating as unclear", source)
+        return {"outcome": "unclear", "encouragement": ""}
+    outcome = result.get("outcome")
+    if outcome not in ("self_corrected", "confirmed_misconception", "unclear"):
+        outcome = "unclear"
+    encouragement = str(result.get("encouragement", "")).strip() if outcome == "self_corrected" else ""
+    return {"outcome": outcome, "encouragement": encouragement}
+
+
+# =============================================================================
+# Attempt review — on-demand "conceptual error / perfect answer / tip" panel
+# =============================================================================
+# Deliberately NOT part of Gates G/H above. Hints (generate_hint) and the
+# leakage guard (check_hint_leakage) exist specifically to keep a student
+# reasoning for themselves WHILE an attempt is still in progress — the
+# opposite of what's needed here. This is a post-hoc review of a FINISHED
+# attempt: what specifically was wrong, and what a complete answer actually
+# looks like. Revealing the answer is the entire point, so this must only
+# ever be surfaced alongside a finished attempt's own review UI, never
+# folded into hint_text or shown while hinting is still active.
+
+_ATTEMPT_REVIEW_SYSTEM_PROMPT = """You write a short post-attempt correction \
+for a student reviewing ONE finished guided-practice attempt — like a \
+teacher handing back marked work. Unlike a hint, you SHOULD reveal the \
+correct answer here; the student is done attempting, not mid-attempt.
+
+Output ONLY a single JSON object, no other text:
+{"conceptual_error": "<one short sentence naming what they got wrong, in \
+plain language — e.g. 'You explained actual resources instead of universal \
+resources.' Say what they wrote and what was actually being asked for.>",
+"perfect_answer": ["<short bullet 1>", "<short bullet 2>", ...],
+"tip": "<one short sentence — what to review or practice next>"}
+
+RULES:
+- perfect_answer: 2-4 short bullets covering the complete correct answer to \
+  the question, each bullet a single clear sentence with a concrete example \
+  where one helps (matching the level of detail in the question itself).
+- conceptual_error must be specific to what THIS student actually wrote, not \
+  a generic restatement of the question.
+- Plain, encouraging, age-appropriate language throughout — this is feedback \
+  on work already done, not a scolding."""
+
+
+async def generate_attempt_review(
+    question: PracticeQuestion,
+    student_answer_text: str,
+    misconception_code: str | None,
+    *,
+    ollama_base_url: str,
+    ollama_model: str,
+    openai_api_key: str,
+    local_enabled: bool,
+    timeout_sec: int = 20,
+) -> dict:
+    """Returns {"conceptual_error": str, "perfect_answer": list[str], "tip": str}.
+    Never empty on failure — falls back to a plain, honest message rather
+    than an empty/broken review panel."""
+    misconception = None
+    if misconception_code and question.known_misconceptions:
+        misconception = next(
+            (m for m in question.known_misconceptions if m.get("code") == misconception_code),
+            None,
+        )
+    user_prompt = (
+        f"Question: {question.text}\n"
+        f"Final answer (for your reference, don't quote it verbatim if a "
+        f"paraphrase reads more naturally): "
+        f"{json.dumps(question.final_answer) if question.final_answer else '(not specified — use your own subject knowledge)'}\n"
+        f"What the student actually wrote: {student_answer_text}"
+        + (f"\nKnown misconception matched: {misconception}" if misconception else "")
+    )
+    result, source = await _llm_call(
+        _ATTEMPT_REVIEW_SYSTEM_PROMPT, user_prompt,
+        ollama_base_url=ollama_base_url, ollama_model=ollama_model,
+        openai_api_key=openai_api_key, local_enabled=local_enabled, timeout_sec=timeout_sec,
+    )
+    if not result or not result.get("perfect_answer"):
+        logger.warning("Attempt review: LLM unavailable (source=%s)", source)
+        return {
+            "conceptual_error": "Couldn't generate a full review right now — try again in a moment.",
+            "perfect_answer": [],
+            "tip": "",
+        }
+    return {
+        "conceptual_error": str(result.get("conceptual_error", "")).strip(),
+        "perfect_answer": [str(b).strip() for b in result.get("perfect_answer", []) if str(b).strip()],
+        "tip": str(result.get("tip", "")).strip(),
+    }
+
+
 # =============================================================================
 # Classroom Brain chat — a student asking about their active question
 # =============================================================================
@@ -988,7 +1465,7 @@ Output ONLY the JSON object, no markdown fences, no other text."""
 _TUTOR_FALLBACK_REPLY = "I couldn't quite think that through just now — try asking again in a moment."
 
 
-async def _transcribe_tutor_audio(audio_bytes: bytes, filename: str, settings) -> str:
+async def transcribe_tutor_audio(audio_bytes: bytes, filename: str, settings) -> str:
     """
     Cloud Whisper ONLY — deliberately NOT the local-whisper-first pattern
     _transcribe_command (routers/voice.py) uses, even though this function
@@ -1049,7 +1526,7 @@ async def tutor_turn(
     answer" — falls back to a plain, honest reply instead of silently
     failing, matching answer_question's own fallback behavior.
     """
-    transcript = await _transcribe_tutor_audio(audio_bytes, "tutor-turn.webm", settings)
+    transcript = await transcribe_tutor_audio(audio_bytes, "tutor-turn.webm", settings)
 
     reply = _TUTOR_FALLBACK_REPLY
     if not transcript.strip():
@@ -1557,7 +2034,9 @@ async def process_attempt(attempt_id: uuid.UUID, db: AsyncSession) -> PracticeAt
 
         # ---- Gates B/C: step extraction (vision) ----
         t0 = _time.monotonic()
-        extraction = await practice_engine.extract_steps(image_bgr, question_text, settings.openai_api_key or "")
+        extraction = await practice_engine.extract_steps(
+            image_bgr, question_text, settings.openai_api_key or "", subject=question.subject,
+        )
         latency["gate_bc_ms"] = round((_time.monotonic() - t0) * 1000, 1)
 
         # The vision model's own bbox guess is frequently imprecise (spatial
@@ -1612,6 +2091,7 @@ async def process_attempt(attempt_id: uuid.UUID, db: AsyncSession) -> PracticeAt
 
     attempt.recognized_steps = extraction["steps"]
     attempt.recognition_confidence = extraction["overall_confidence"]
+    attempt.diagram_context = extraction.get("diagram_context")
 
     # Previous step for Gate D's consecutive-transformation check: the last
     # attempt's last recognized step, if this question has been attempted before.
@@ -1703,6 +2183,13 @@ async def process_attempt(attempt_id: uuid.UUID, db: AsyncSession) -> PracticeAt
     attempt.gate_d_result = gate_d_result
 
     # ---- Gates E/F: solution-path validation + misconception classification ----
+    # Grade-aware rigor + library candidates (see misconception_library.py).
+    attempt_session = await db.get(Session, attempt.session_id)
+    grade_num = misconception_library.parse_grade(attempt_session.grade if attempt_session else None)
+    library_candidates = await misconception_library.get_candidates(
+        db, _normalize_subject_key(question.subject), question.subject, grade_num,
+        f"{question.topic or ''} {question.text}",
+    )
     t0 = _time.monotonic()
     validation = await validate_step(
         question, extraction["steps"], gate_d_result,
@@ -1710,6 +2197,9 @@ async def process_attempt(attempt_id: uuid.UUID, db: AsyncSession) -> PracticeAt
         ollama_model=settings.ollama_brain_model,
         openai_api_key=settings.openai_api_key or "",
         local_enabled=settings.practice_local_llm_enabled,
+        diagram_context=attempt.diagram_context,
+        grade_band=misconception_library.grade_band(grade_num),
+        library_misconceptions=library_candidates,
     )
     latency["gate_ef_ms"] = round((_time.monotonic() - t0) * 1000, 1)
 
@@ -1766,35 +2256,71 @@ async def process_attempt(attempt_id: uuid.UUID, db: AsyncSession) -> PracticeAt
     hint_level = select_hint_level(validation["validation_status"], help_streak)
     attempt.hint_level = hint_level
 
-    if hint_level in (1, 2, 3, 4):
+    # Productive-struggle step: on the student's FIRST genuine mistake on
+    # this question (hint_level==1 only happens on help_streak==0 — see
+    # select_hint_level), ask them to explain their own reasoning BEFORE
+    # handing them a hint, instead of going straight to Gate G. Repeated
+    # mistakes (hint_level 2-4) skip this and go straight to the normal
+    # hint ladder below — re-asking a reflection question that didn't
+    # resolve things once already reads as repetitive, not supportive.
+    if hint_level == 1 and validation["validation_status"] in ("arithmetic_slip", "conceptual_misconception"):
+        error_step_text = (
+            extraction["steps"][attempt.error_step_index].get("text", "")
+            if attempt.error_step_index is not None and attempt.error_step_index < len(extraction["steps"])
+            else ""
+        )
         t0 = _time.monotonic()
-        hint = await generate_hint(
+        cq = await generate_counter_question(
+            question, error_step_text,
+            ollama_base_url=settings.ollama_base_url,
+            ollama_model=settings.ollama_brain_model,
+            openai_api_key=settings.openai_api_key or "",
+            local_enabled=settings.practice_local_llm_enabled,
+        )
+        counter_question_ok = False
+        if cq["counter_question"]:
+            leaked = await check_hint_leakage(
+                question, cq["counter_question"],
+                ollama_base_url=settings.ollama_base_url,
+                ollama_model=settings.ollama_brain_model,
+                openai_api_key=settings.openai_api_key or "",
+                local_enabled=settings.practice_local_llm_enabled,
+            )
+            counter_question_ok = not leaked
+        latency["counter_question_ms"] = round((_time.monotonic() - t0) * 1000, 1)
+
+        if counter_question_ok:
+            # hint_text deliberately stays null here — generated only once
+            # the student's explanation comes back and doesn't resolve
+            # things (see the /explain and /skip-explanation endpoints).
+            attempt.counter_question = cq["counter_question"]
+        else:
+            # Counter-question generation failed or leaked — fall back to
+            # an immediate hint rather than leaving the student with
+            # nothing at all.
+            hint_text, effective_level = await generate_safe_hint(
+                question, hint_level, validation,
+                ollama_base_url=settings.ollama_base_url,
+                ollama_model=settings.ollama_brain_model,
+                openai_api_key=settings.openai_api_key or "",
+                local_enabled=settings.practice_local_llm_enabled,
+            )
+            attempt.hint_text = hint_text
+            attempt.hint_level = effective_level
+            attempt.hint_hash = hashlib.sha256(hint_text.encode()).hexdigest()[:16]
+    elif hint_level in (2, 3, 4):
+        t0 = _time.monotonic()
+        hint_text, effective_level = await generate_safe_hint(
             question, hint_level, validation,
             ollama_base_url=settings.ollama_base_url,
             ollama_model=settings.ollama_brain_model,
             openai_api_key=settings.openai_api_key or "",
             local_enabled=settings.practice_local_llm_enabled,
         )
-        leaked = await check_hint_leakage(
-            question, hint["hint_text"],
-            ollama_base_url=settings.ollama_base_url,
-            ollama_model=settings.ollama_brain_model,
-            openai_api_key=settings.openai_api_key or "",
-            local_enabled=settings.practice_local_llm_enabled,
-        )
         latency["gate_g_ms"] = round((_time.monotonic() - t0) * 1000, 1)
-
-        if leaked or not hint["hint_text"]:
-            # Reject and fall back to the lowest-information level rather
-            # than showing nothing — a silent failure here reads to the
-            # student as "no help available" with no explanation.
-            attempt.hint_text = (
-                "Try re-checking your last step against what the question is asking."
-            )
-            attempt.hint_level = 1
-        else:
-            attempt.hint_text = hint["hint_text"]
-        attempt.hint_hash = hashlib.sha256((attempt.hint_text or "").encode()).hexdigest()[:16]
+        attempt.hint_text = hint_text
+        attempt.hint_level = effective_level
+        attempt.hint_hash = hashlib.sha256(hint_text.encode()).hexdigest()[:16]
     elif hint_level == 5:
         # Escalating to the teacher shouldn't mean the student sees nothing
         # at all in the meantime — carry forward the last real hint they

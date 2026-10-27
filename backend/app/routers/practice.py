@@ -1,6 +1,7 @@
 import uuid
 import json
 import logging
+import hashlib
 from fastapi import APIRouter, File, Form, UploadFile, BackgroundTasks
 from fastapi.responses import Response
 from sqlalchemy import select
@@ -15,6 +16,7 @@ from app.models.practice_station import PracticeStation
 from app.models.practice_attempt import PracticeAttempt
 from app.models.practice_attempt_summary import PracticeAttemptSummary
 from app.models.practice_tutor_message import PracticeTutorMessage
+from app.models.practice_radar_alert import PracticeRadarAlert
 from app.services import storage_service, practice_service
 from app.schemas.practice import (
     PracticeQuestionGenerateRequest,
@@ -38,6 +40,9 @@ from app.schemas.practice import (
     PracticeTutorTurnResponse,
     StationNotesResponse,
     StationQuizResponse,
+    RadarResponse,
+    RadarAlertResponse,
+    RadarAlertUpdate,
 )
 from app.config import get_settings
 
@@ -377,6 +382,13 @@ async def _run_attempt_background(attempt_id: uuid.UUID):
                 )
             except Exception:
                 logger.exception("Attempt-history pruning failed for question %s", attempt.question_id)
+            # Cross-desk radar: best-effort too — it only reads attempts and
+            # writes alert rows, and must never fail a graded attempt.
+            try:
+                from app.services import radar_service
+                await radar_service.evaluate_and_alert(db, attempt.session_id)
+            except Exception:
+                logger.exception("Radar evaluation failed for session %s", attempt.session_id)
         except Exception:
             logger.exception("Background practice-attempt processing failed for %s", attempt_id)
             try:
@@ -420,6 +432,145 @@ async def get_attempt(attempt_id: uuid.UUID, db: DB, _: CurrentTeacher):
     attempt = await db.get(PracticeAttempt, attempt_id)
     if not attempt:
         raise ACIError("ATTEMPT_NOT_FOUND", "Practice attempt not found", 404)
+    return PracticeAttemptResponse.from_orm(attempt)
+
+
+@router.post("/practice-attempts/{attempt_id}/review", response_model=PracticeAttemptResponse)
+async def get_or_generate_attempt_review(attempt_id: uuid.UUID, db: DB, _: CurrentTeacher):
+    """
+    On-demand "conceptual error / perfect answer / tip" correction panel —
+    generated the first time this is called for a given attempt, then
+    cached on attempt.review so a second open doesn't re-call the LLM. Not
+    generated automatically on every attempt (see process_attempt) —
+    unlike hints, this reveals the answer, so it's only worth the LLM call
+    when someone actually asks to see it.
+    """
+    attempt = await db.get(PracticeAttempt, attempt_id)
+    if not attempt:
+        raise ACIError("ATTEMPT_NOT_FOUND", "Practice attempt not found", 404)
+    if attempt.status != "complete":
+        raise ACIError("ATTEMPT_NOT_READY", "This attempt hasn't finished grading yet", 409)
+    if attempt.review is not None:
+        return PracticeAttemptResponse.from_orm(attempt)
+
+    question = await db.get(PracticeQuestion, attempt.question_id)
+    if not question:
+        raise ACIError("QUESTION_NOT_FOUND", "The attempt's question no longer exists", 404)
+
+    student_answer_text = "\n".join(
+        s.get("text", "") for s in (attempt.recognized_steps or []) if s.get("text")
+    ) or "(nothing legible was recognized)"
+
+    settings = get_settings()
+    result = await practice_service.generate_attempt_review(
+        question, student_answer_text, attempt.misconception_code,
+        ollama_base_url=settings.ollama_base_url,
+        ollama_model=settings.ollama_brain_model,
+        openai_api_key=settings.openai_api_key or "",
+        local_enabled=settings.practice_local_llm_enabled,
+    )
+    attempt.review = result
+    await db.commit()
+    await db.refresh(attempt)
+    return PracticeAttemptResponse.from_orm(attempt)
+
+
+@router.post("/practice-attempts/{attempt_id}/explain", response_model=PracticeAttemptResponse)
+async def explain_attempt(
+    attempt_id: uuid.UUID, db: DB, _: CurrentTeacher,
+    audio: UploadFile = File(...),
+):
+    """
+    The "productive struggle" step's response half — a student explaining
+    their own reasoning after a first mistake, before any hint (see
+    process_attempt's counter_question wiring). Transcribes the recording,
+    probes whether the explanation shows self-correction or confirms the
+    same misconception, and only generates a real hint in the latter case.
+    """
+    attempt = await db.get(PracticeAttempt, attempt_id)
+    if not attempt:
+        raise ACIError("ATTEMPT_NOT_FOUND", "Practice attempt not found", 404)
+    if not attempt.counter_question:
+        raise ACIError("NO_COUNTER_QUESTION", "This attempt has no counter-question awaiting a response", 409)
+    if attempt.explanation_outcome is not None:
+        raise ACIError("ALREADY_EXPLAINED", "This attempt's counter-question was already answered", 409)
+
+    if audio.content_type not in _ALLOWED_AUDIO_CONTENT_TYPES:
+        raise ACIError("INVALID_AUDIO_TYPE", "Unsupported audio format", 400)
+    audio_bytes = await audio.read()
+
+    question = await db.get(PracticeQuestion, attempt.question_id)
+    if not question:
+        raise ACIError("QUESTION_NOT_FOUND", "The attempt's question no longer exists", 404)
+
+    settings = get_settings()
+    transcript = await practice_service.transcribe_tutor_audio(audio_bytes, "explanation.webm", settings)
+    attempt.student_explanation = transcript
+
+    probe = await practice_service.evaluate_explanation(
+        question, attempt.counter_question, transcript,
+        ollama_base_url=settings.ollama_base_url,
+        ollama_model=settings.ollama_brain_model,
+        openai_api_key=settings.openai_api_key or "",
+        local_enabled=settings.practice_local_llm_enabled,
+    )
+    attempt.explanation_outcome = probe["outcome"]
+
+    if probe["outcome"] == "self_corrected":
+        attempt.hint_text = probe["encouragement"] or "Sounds like you're onto it — go ahead and try again."
+    else:
+        validation = {"validation_status": attempt.validation_status, "misconception_code": attempt.misconception_code}
+        hint_text, effective_level = await practice_service.generate_safe_hint(
+            question, 1, validation,
+            ollama_base_url=settings.ollama_base_url,
+            ollama_model=settings.ollama_brain_model,
+            openai_api_key=settings.openai_api_key or "",
+            local_enabled=settings.practice_local_llm_enabled,
+        )
+        attempt.hint_text = hint_text
+        attempt.hint_level = effective_level
+    attempt.hint_hash = hashlib.sha256((attempt.hint_text or "").encode()).hexdigest()[:16]
+
+    await db.commit()
+    await db.refresh(attempt)
+    return PracticeAttemptResponse.from_orm(attempt)
+
+
+@router.post("/practice-attempts/{attempt_id}/skip-explanation", response_model=PracticeAttemptResponse)
+async def skip_explanation(attempt_id: uuid.UUID, db: DB, _: CurrentTeacher):
+    """
+    A student who doesn't want to (or can't, e.g. no working mic) respond
+    to the counter-question — gives them the real hint immediately instead
+    of leaving them stuck with only a question and no way to answer it.
+    """
+    attempt = await db.get(PracticeAttempt, attempt_id)
+    if not attempt:
+        raise ACIError("ATTEMPT_NOT_FOUND", "Practice attempt not found", 404)
+    if not attempt.counter_question:
+        raise ACIError("NO_COUNTER_QUESTION", "This attempt has no counter-question awaiting a response", 409)
+    if attempt.explanation_outcome is not None:
+        raise ACIError("ALREADY_EXPLAINED", "This attempt's counter-question was already answered", 409)
+
+    question = await db.get(PracticeQuestion, attempt.question_id)
+    if not question:
+        raise ACIError("QUESTION_NOT_FOUND", "The attempt's question no longer exists", 404)
+
+    attempt.explanation_outcome = "skipped"
+    settings = get_settings()
+    validation = {"validation_status": attempt.validation_status, "misconception_code": attempt.misconception_code}
+    hint_text, effective_level = await practice_service.generate_safe_hint(
+        question, 1, validation,
+        ollama_base_url=settings.ollama_base_url,
+        ollama_model=settings.ollama_brain_model,
+        openai_api_key=settings.openai_api_key or "",
+        local_enabled=settings.practice_local_llm_enabled,
+    )
+    attempt.hint_text = hint_text
+    attempt.hint_level = effective_level
+    attempt.hint_hash = hashlib.sha256(hint_text.encode()).hexdigest()[:16]
+
+    await db.commit()
+    await db.refresh(attempt)
     return PracticeAttemptResponse.from_orm(attempt)
 
 
@@ -992,3 +1143,34 @@ async def batch_scan(
         background_tasks.add_task(_run_attempt_background, r.attempt_id)
 
     return BatchScanResponse(detected=results, skipped=skipped)
+
+
+# ─── Class Misconception Radar ──────────────────────────────────────────────
+
+
+@router.get("/sessions/{session_id}/practice/radar", response_model=RadarResponse)
+async def get_session_radar(session_id: uuid.UUID, db: DB, _: CurrentTeacher):
+    from app.services import radar_service
+    session = await db.get(Session, session_id)
+    if not session:
+        raise ACIError("SESSION_NOT_FOUND", "Session not found", 404)
+    return RadarResponse(**(await radar_service.get_active_alerts(db, session_id)))
+
+
+@router.patch("/radar-alerts/{alert_id}", response_model=RadarAlertResponse)
+async def update_radar_alert(alert_id: uuid.UUID, body: RadarAlertUpdate, db: DB, _: CurrentTeacher):
+    from app.services import radar_service
+    alert = await db.get(PracticeRadarAlert, alert_id)
+    if not alert:
+        raise ACIError("ALERT_NOT_FOUND", "Radar alert not found", 404)
+    await radar_service.update_alert_status(db, alert, body.status)
+    data = await radar_service.get_active_alerts(db, alert.session_id)
+    hit = next((a for a in data["alerts"] if a["id"] == alert_id), None)
+    if hit is not None:
+        return RadarAlertResponse(**hit)
+    # No longer an active alert (dismissed / false_alarm): echo minimal state.
+    return RadarAlertResponse(
+        id=alert.id, question_id=alert.question_id, code=alert.code, title=alert.code,
+        desk_count=alert.desk_count, attempting_count=alert.attempting_count,
+        desks=[], status=alert.status, created_at=alert.created_at,
+    )

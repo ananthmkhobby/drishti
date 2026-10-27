@@ -2,14 +2,14 @@
 
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, Loader2, Camera, Pause, Play, AlertTriangle, MessageSquare, Sparkles, Minimize2, Maximize2, ArrowLeft, Brain, X, Mic, Image as ImageIcon, Trash2, Send, GraduationCap, Volume2 } from "lucide-react";
+import { CheckCircle2, Loader2, Camera, Pause, Play, AlertTriangle, MessageSquare, Sparkles, Minimize2, Maximize2, ArrowLeft, Brain, X, Mic, Image as ImageIcon, Trash2, Send, GraduationCap, Volume2, ChevronDown, BookOpen, Lightbulb } from "lucide-react";
 import { api, getPracticeAttemptAudioUrl, getPracticeAttemptImageUrl } from "@/lib/api";
-import type { PracticeStation, PracticeAttempt, StudentState, AttemptStatus } from "@/lib/api";
+import type { PracticeStation, PracticeAttempt, StudentState, AttemptStatus, AttemptReview } from "@/lib/api";
 import { cn, fixInfiniteAudioDuration } from "@/lib/utils";
 import { captureSharpestFrame } from "@/lib/imageQuality";
 import { VoiceAnswerButton, type VoiceAnswerButtonHandle } from "@/components/practice/VoiceAnswerButton";
 import { VoiceDictateButton } from "@/components/practice/VoiceDictateButton";
-import { HandDrawnCircle } from "@/components/practice/HandDrawnCircle";
+import { RedPenMark } from "@/components/practice/RedPenMark";
 import { useVoiceConversation } from "@/hooks/useVoiceConversation";
 
 const JPEG_QUALITY = 0.85;
@@ -156,6 +156,19 @@ function resultCopyFor(attempt: PracticeAttempt) {
   return { ...copy, message };
 }
 
+// Chip/label/text tones for the dark chat bubble — STATE_COPY above keeps the
+// wording (and still drives the teacher-facing views' light cards); this is
+// only the dark-theme presentation of the same seven student states.
+const STATE_TONE: Record<StudentState, { label: string; chip: string; text: string }> = {
+  solved:           { label: "Solved",            chip: "bg-emerald-500/20 text-emerald-300", text: "text-emerald-200" },
+  progressing:      { label: "On track",          chip: "bg-emerald-500/20 text-emerald-300", text: "text-emerald-200" },
+  uncertain:        { label: "Check this step",   chip: "bg-amber-500/20 text-amber-300",     text: "text-amber-100" },
+  stuck:            { label: "Needs a nudge",     chip: "bg-amber-500/20 text-amber-300",     text: "text-amber-100" },
+  misconception:    { label: "Mix-up spotted",    chip: "bg-orange-500/20 text-orange-300",   text: "text-orange-100" },
+  ambiguous:        { label: "Couldn't read it",  chip: "bg-slate-500/25 text-slate-300",     text: "text-slate-200" },
+  teacher_required: { label: "Ask your teacher",  chip: "bg-red-500/20 text-red-300",         text: "text-red-100" },
+};
+
 // One result card — the AI's read on a single capture (state message, hint,
 // what it recognized, the photo/audio itself). Shared by the ephemeral
 // Brain bubble (a fresh result, just in) and the full history drawer (every
@@ -169,6 +182,69 @@ function AttemptResultCard({
   deleting?: boolean;
 }) {
   const copy = resultCopyFor(attempt);
+  // Local review state seeded from attempt.review (already-cached from a
+  // prior fetch of this same attempt object) so re-opening a card that was
+  // already expanded once doesn't lose it, without needing this component
+  // to own the attempt's own refresh/polling.
+  const [review, setReview] = useState<AttemptReview | null>(attempt.review);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewError, setReviewError] = useState("");
+  useEffect(() => { setReview(attempt.review); }, [attempt.review]);
+
+  // Productive-struggle step (see PracticeAttempt.counter_question):
+  // outcome/hintText mirror the attempt's own fields until the student
+  // responds (or skips), at which point api.explainAttempt/skipExplanation
+  // return the updated attempt and this overrides them locally — same
+  // seed-from-prop-then-override pattern as review/reviewOpen above.
+  const [explainState, setExplainState] = useState<{
+    outcome: PracticeAttempt["explanation_outcome"];
+    hintText: string | null;
+    explanation: string | null;
+    submitting: boolean;
+    error: string;
+  }>({ outcome: attempt.explanation_outcome, hintText: attempt.hint_text, explanation: attempt.student_explanation, submitting: false, error: "" });
+  useEffect(() => {
+    setExplainState({ outcome: attempt.explanation_outcome, hintText: attempt.hint_text, explanation: attempt.student_explanation, submitting: false, error: "" });
+  }, [attempt.explanation_outcome, attempt.hint_text, attempt.student_explanation]);
+
+  async function handleExplain(blob: Blob) {
+    setExplainState((s) => ({ ...s, submitting: true, error: "" }));
+    try {
+      const updated = await api.explainAttempt(attempt.attempt_id, blob);
+      setExplainState({ outcome: updated.explanation_outcome, hintText: updated.hint_text, explanation: updated.student_explanation, submitting: false, error: "" });
+    } catch {
+      setExplainState((s) => ({ ...s, submitting: false, error: "Couldn't process that — try again, or skip to get a hint." }));
+    }
+  }
+
+  async function handleSkipExplanation() {
+    setExplainState((s) => ({ ...s, submitting: true, error: "" }));
+    try {
+      const updated = await api.skipExplanation(attempt.attempt_id);
+      setExplainState({ outcome: updated.explanation_outcome, hintText: updated.hint_text, explanation: updated.student_explanation, submitting: false, error: "" });
+    } catch {
+      setExplainState((s) => ({ ...s, submitting: false, error: "Couldn't get a hint right now — try again in a moment." }));
+    }
+  }
+
+  async function toggleReview() {
+    const opening = !reviewOpen;
+    setReviewOpen(opening);
+    if (opening && !review && !reviewLoading) {
+      setReviewLoading(true);
+      setReviewError("");
+      try {
+        const updated = await api.getAttemptReview(attempt.attempt_id);
+        setReview(updated.review);
+      } catch {
+        setReviewError("Couldn't load the full correction right now — try again in a moment.");
+      } finally {
+        setReviewLoading(false);
+      }
+    }
+  }
+
   if (!copy) return null;
   // See STATE_COPY/hint_level comment history: the pinpoint circle/highlight
   // only appears from hint_level 2 onward — the first miss gets the gentle
@@ -185,96 +261,204 @@ function AttemptResultCard({
   // "where did I go wrong" was the least prominent thing on the card.
   const hasPinpointPhoto = showPinpoint && attempt.input_type !== "audio" && !!errorStep?.bbox;
 
+  const tone = STATE_TONE[attempt.student_state as StudentState] ?? STATE_TONE.ambiguous;
+  const answered = !!explainState.outcome;
+  // With a counter-question the hint is its OWN later bubble (after the
+  // student's reply); without one it belongs in the main bubble, as before.
+  const inlineHint = !attempt.counter_question ? explainState.hintText : null;
+
+  const bubble = "rounded-2xl rounded-tl-md border border-white/10 bg-white/[.06] px-3.5 py-3";
+
   return (
-    <div className={cn("rounded-xl border px-3 py-2.5", copy.bg, copy.border)}>
-      <div className="flex items-center justify-between gap-2 mb-1">
-        <p className={cn("text-xs font-semibold flex items-center gap-1.5", copy.color)}>
-          {attempt.student_state === "progressing" ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}
-          Attempt #{attempt.attempt_no}
-        </p>
-        <div className="flex items-center gap-1.5 shrink-0">
-          {attempt.captured_at && (
-            <p className="text-[0.625rem] text-slate-500">
-              {new Date(attempt.captured_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            </p>
-          )}
+    <div className="space-y-2">
+      {/* AI bubble 1 — the read on this capture */}
+      <div className={cn(bubble, "space-y-2.5")}>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold", tone.chip)}>
+              {attempt.student_state === "progressing" || attempt.student_state === "solved"
+                ? <CheckCircle2 className="h-3 w-3" /> : <Sparkles className="h-3 w-3" />}
+              {tone.label}
+            </span>
+            <span className="truncate text-[0.6875rem] text-white/40">
+              Attempt #{attempt.attempt_no}
+              {attempt.captured_at && ` · ${new Date(attempt.captured_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+            </span>
+          </div>
           {onDelete && (
             <button
               onClick={() => onDelete(attempt.attempt_id)}
               disabled={deleting}
               title="Delete this attempt permanently"
-              className="text-slate-400 hover:text-red-600 disabled:opacity-40"
+              className="shrink-0 text-white/30 hover:text-red-400 disabled:opacity-40"
             >
               <Trash2 className="h-3 w-3" />
             </button>
           )}
         </div>
+
+        {hasPinpointPhoto && (
+          <div>
+            <div className="relative overflow-hidden rounded-xl border border-red-400/40">
+              <img src={getPracticeAttemptImageUrl(attempt.attempt_id)} alt="your capture, with the mistake marked" className="block h-auto w-full" />
+              <RedPenMark bbox={errorStep!.bbox} seed={`${attempt.attempt_id}-${attempt.error_step_index}`} />
+            </div>
+            <p className="mt-1 text-[0.6875rem] text-red-300/80">Marked where to look</p>
+          </div>
+        )}
+
+        <p className={cn("text-sm font-medium leading-snug", tone.text)}>
+          {attempt.counter_question && !answered ? "Let's look at this step together." : copy.message}
+        </p>
+        {inlineHint && <p className="text-sm leading-snug text-white/85">{inlineHint}</p>}
+
+        {/* Full correction — generated on demand (never automatically, unlike
+            hint_text) the first time this is expanded, then cached on the
+            attempt itself. Only offered where there's a pinpointed mistake. */}
+        {hasPinpointPhoto && (
+          <div>
+            <button
+              type="button"
+              onClick={toggleReview}
+              className="flex items-center gap-1 text-xs font-semibold text-indigo-300 hover:text-indigo-200"
+            >
+              Show the full correction
+              <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", reviewOpen && "rotate-180")} />
+            </button>
+            {reviewOpen && (
+              <div className="mt-1.5 space-y-2.5 rounded-xl border border-indigo-400/20 bg-indigo-500/10 px-3 py-2.5">
+                {reviewLoading ? (
+                  <p className="flex items-center gap-1.5 text-xs text-white/50">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Working it out…
+                  </p>
+                ) : reviewError ? (
+                  <p className="text-xs text-red-300">{reviewError}</p>
+                ) : review ? (
+                  <>
+                    {review.conceptual_error && (
+                      <div>
+                        <p className="flex items-center gap-1.5 text-xs font-semibold text-indigo-200">
+                          <BookOpen className="h-3.5 w-3.5" /> What went wrong
+                        </p>
+                        <p className="mt-0.5 text-xs leading-snug text-white/80">{review.conceptual_error}</p>
+                      </div>
+                    )}
+                    {review.perfect_answer.length > 0 && (
+                      <div>
+                        <p className="flex items-center gap-1.5 text-xs font-semibold text-indigo-200">
+                          <BookOpen className="h-3.5 w-3.5" /> A complete answer
+                        </p>
+                        <ul className="mt-0.5 space-y-1 text-xs text-white/80">
+                          {review.perfect_answer.map((b, i) => (
+                            <li key={i} className="flex gap-1.5"><span className="text-indigo-300">•</span><span>{b}</span></li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {review.tip && (
+                      <p className="flex items-start gap-1.5 text-xs text-amber-300">
+                        <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span><span className="font-semibold">Tip:</span> {review.tip}</span>
+                      </p>
+                    )}
+                  </>
+                ) : null}
+              </div>
+            )}
+          </div>
+        )}
+
+        {attempt.recognized_steps && attempt.recognized_steps.length > 0 && (
+          <div className="rounded-xl bg-black/25 px-2.5 py-2">
+            <p className="mb-1 text-[0.625rem] font-semibold uppercase tracking-wide text-white/35">
+              {attempt.input_type === "audio" ? "What you said" : "What I read from your page"}
+            </p>
+            {attempt.input_type === "audio" ? (
+              <p className="text-xs leading-relaxed text-white/60">
+                {attempt.recognized_steps.map((s, i) => (
+                  <span key={i} className={showPinpoint && i === attempt.error_step_index ? "rounded bg-red-500/25 px-1 font-medium text-red-200" : undefined}>
+                    {s.text}{" "}
+                  </span>
+                ))}
+              </p>
+            ) : (
+              <ul className="space-y-0.5 text-xs">
+                {attempt.recognized_steps.map((s, i) => (
+                  <li
+                    key={i}
+                    className={cn(
+                      showPinpoint && i === attempt.error_step_index
+                        ? "rounded bg-red-500/25 px-1.5 py-0.5 font-medium text-red-200"
+                        : "px-1.5 text-white/55"
+                    )}
+                  >
+                    {showPinpoint && i === attempt.error_step_index && "→ "}{s.text}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {attempt.input_type === "audio" ? (
+          <audio
+            controls
+            src={getPracticeAttemptAudioUrl(attempt.attempt_id)}
+            onLoadedMetadata={(e) => fixInfiniteAudioDuration(e.currentTarget)}
+            className="h-7 w-full"
+          />
+        ) : !hasPinpointPhoto ? (
+          <div className="relative overflow-hidden rounded-xl border border-white/10">
+            <img src={getPracticeAttemptImageUrl(attempt.attempt_id)} alt="your capture" className="block h-auto w-full" />
+          </div>
+        ) : null}
       </div>
 
-      {hasPinpointPhoto && (
-        <div className="mb-2">
-          <p className="mb-1 flex items-center gap-1 text-[0.6875rem] font-bold uppercase tracking-wide text-red-600">
-            <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-red-100 text-[0.5625rem]">●</span>
-            Here&apos;s where to look
+      {/* AI bubble 2 — the productive-struggle question (first mistake only;
+          see PracticeAttempt.counter_question). Replaces an immediate hint. */}
+      {attempt.counter_question && (
+        <div className={cn(bubble, "space-y-2 border-amber-400/25 bg-amber-400/[.07]")}>
+          <p className="text-sm leading-snug text-amber-100">
+            <span className="font-semibold">Before a hint —</span> {attempt.counter_question}
           </p>
-          <div className="relative overflow-hidden rounded-lg border-2 border-red-200 shadow-sm">
-            <img src={getPracticeAttemptImageUrl(attempt.attempt_id)} alt="your capture, with the mistake marked" className="block h-auto w-full" />
-            <HandDrawnCircle bbox={errorStep!.bbox} seed={`${attempt.attempt_id}-${attempt.error_step_index}`} />
+          {!answered && (
+            explainState.submitting ? (
+              <p className="flex items-center gap-1.5 text-xs text-white/50">
+                <Loader2 className="h-3 w-3 animate-spin" /> Thinking about your answer…
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <VoiceAnswerButton onCapture={handleExplain} label="Answer by voice" size="sm" />
+                <button
+                  type="button"
+                  onClick={handleSkipExplanation}
+                  className="rounded-full border border-white/15 px-3 py-1 text-xs font-medium text-white/70 hover:bg-white/10"
+                >
+                  Skip, give me a hint
+                </button>
+              </div>
+            )
+          )}
+          {explainState.error && <p className="text-xs text-red-300">{explainState.error}</p>}
+        </div>
+      )}
+
+      {/* Student's reply, right-aligned like any chat */}
+      {attempt.counter_question && answered && (
+        <div className="flex justify-end">
+          <div className="max-w-[85%] rounded-2xl rounded-br-md bg-indigo-600 px-3.5 py-2.5 text-sm text-white">
+            {explainState.outcome === "skipped"
+              ? <span className="italic text-white/80">Skipped, asked for a hint</span>
+              : explainState.explanation || <span className="italic text-white/80">(couldn&apos;t make out the recording)</span>}
           </div>
         </div>
       )}
 
-      <p className={cn("text-sm font-medium", copy.color)}>{copy.message}</p>
-      {attempt.hint_text && <p className="text-sm text-slate-700 mt-1">{attempt.hint_text}</p>}
-      {attempt.recognized_steps && attempt.recognized_steps.length > 0 && (
-        <div className="mt-2 rounded-lg bg-white/70 border border-white px-2.5 py-2">
-          <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-slate-400 mb-1">
-            {attempt.input_type === "audio" ? "What you said" : "What you wrote"}
-          </p>
-          {attempt.input_type === "audio" ? (
-            <p className="text-xs leading-relaxed text-slate-600">
-              {attempt.recognized_steps.map((s, i) => (
-                <span
-                  key={i}
-                  className={showPinpoint && i === attempt.error_step_index ? "rounded bg-red-100 px-1 font-medium text-red-700" : undefined}
-                >
-                  {s.text}{" "}
-                </span>
-              ))}
-            </p>
-          ) : (
-            <ul className="space-y-0.5 text-xs">
-              {attempt.recognized_steps.map((s, i) => (
-                <li
-                  key={i}
-                  className={cn(
-                    showPinpoint && i === attempt.error_step_index
-                      ? "rounded bg-red-100 px-1.5 py-0.5 font-medium text-red-700"
-                      : "text-slate-500 px-1.5"
-                  )}
-                >
-                  {showPinpoint && i === attempt.error_step_index && "→ "}{s.text}
-                </li>
-              ))}
-            </ul>
-          )}
+      {/* AI bubble 3 — what the reply earned: encouragement, or a real hint */}
+      {attempt.counter_question && answered && explainState.hintText && (
+        <div className={bubble}>
+          <p className="text-sm leading-snug text-white/90">{explainState.hintText}</p>
         </div>
       )}
-      {attempt.input_type === "audio" ? (
-        <audio
-          controls
-          src={getPracticeAttemptAudioUrl(attempt.attempt_id)}
-          onLoadedMetadata={(e) => fixInfiniteAudioDuration(e.currentTarget)}
-          className="mt-2 h-7 w-full"
-        />
-      ) : !hasPinpointPhoto ? (
-        // Plain capture, no confirmed pinpoint yet (first miss, or nothing
-        // wrong to circle) — still shown, just without the callout treatment
-        // above since there's nothing specific to point at.
-        <div className="relative mt-2 overflow-hidden rounded-lg border border-white">
-          <img src={getPracticeAttemptImageUrl(attempt.attempt_id)} alt="your capture" className="block h-auto w-full" />
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -320,6 +504,20 @@ export default function StationCapturePage({ params }: { params: Promise<{ stati
   // + Q&A, oldest to newest) — nothing is deleted from it except by the
   // explicit delete controls, which also apply to the underlying attempt.
   const [panelOpen, setPanelOpen] = useState(false);
+  // lg+ (>=1024px): the feedback chat docks beside the camera as a real
+  // split screen and stays open; below that it keeps the original floating
+  // overlay. (An always-docked panel was tried in Sept 2026 and cut because
+  // it ate camera width on small screens all lesson — hence lg+ only, and
+  // the student can still close it.)
+  const [isWide, setIsWide] = useState(false);
+  const isWideRef = useRef(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const apply = () => { setIsWide(mq.matches); isWideRef.current = mq.matches; };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
   const [autoDismissActive, setAutoDismissActive] = useState(false);
   const [lastSeenCount, setLastSeenCount] = useState(0);
   const [barPct, setBarPct] = useState(100);
@@ -1011,8 +1209,11 @@ export default function StationCapturePage({ params }: { params: Promise<{ stati
     // while the student is actually here does that.
     if (!everMounted.current) { everMounted.current = true; return; }
     setPanelOpen(true);
-    setAutoDismissActive(true);
-    startAutoDismissTimer();
+    // A docked chat doesn't vanish on a timer — only the floating overlay does.
+    if (!isWideRef.current) {
+      setAutoDismissActive(true);
+      startAutoDismissTimer();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [station, attempts, startAutoDismissTimer]);
 
@@ -1084,7 +1285,7 @@ export default function StationCapturePage({ params }: { params: Promise<{ stati
     // docked feedback column) entered the picture. Now that feedback is an
     // overlay instead of a layout sibling, the camera column is the only
     // child and always gets the full screen.
-    <div className="h-screen overflow-hidden bg-slate-900 text-white flex flex-col">
+    <div className="h-screen overflow-hidden bg-slate-900 text-white flex flex-row">
       <style>{`
         @keyframes ps-bubble-in { from { opacity: 0; transform: translateY(14px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
         @keyframes ps-msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
@@ -1485,7 +1686,11 @@ export default function StationCapturePage({ params }: { params: Promise<{ stati
           stays open. Anchored top-right, clear of both the minimized-camera
           thumbnail and the bottom controls bar (both bottom-anchored). */}
       {panelOpen && (
-        <div className="ps-bubble fixed top-16 right-4 left-4 sm:left-auto sm:w-[26rem] z-40 flex max-h-[78vh] flex-col overflow-hidden rounded-3xl bg-slate-950 border border-white/10 shadow-2xl">
+        <div className={cn(
+          isWide
+            ? "flex h-full w-[27rem] shrink-0 flex-col overflow-hidden border-l border-white/10 bg-slate-950"
+            : "ps-bubble fixed top-16 right-4 left-4 sm:left-auto sm:w-[26rem] z-40 flex max-h-[78vh] flex-col overflow-hidden rounded-3xl bg-slate-950 border border-white/10 shadow-2xl"
+        )}>
           {autoDismissActive && (
             <div className="h-1 shrink-0 bg-white/10">
               <div className="h-full bg-[#D7A24E]" style={{ width: `${barPct}%` }} />
@@ -1496,7 +1701,10 @@ export default function StationCapturePage({ params }: { params: Promise<{ stati
               <div className="flex h-[1.875rem] w-[1.875rem] shrink-0 items-center justify-center rounded-full bg-indigo-600">
                 <Brain className="h-3.5 w-3.5 text-white" />
               </div>
-              <p className="text-[0.8125rem] font-semibold text-white">Classroom Brain</p>
+              <div className="min-w-0">
+                <p className="text-[0.8125rem] font-semibold leading-tight text-white">Feedback chat</p>
+                <p className="truncate text-[0.6875rem] leading-tight text-white/40">{station.label}</p>
+              </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               {prunableAttempts.length > 0 && (

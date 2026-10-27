@@ -160,6 +160,14 @@ export interface RecognizedStep {
 
 export type PracticeInputType = "image" | "audio";
 
+// The on-demand post-attempt correction panel — "conceptual error / perfect
+// answer / tip" — deliberately separate from hint_text (see PracticeAttempt.review).
+export interface AttemptReview {
+  conceptual_error: string;
+  perfect_answer: string[];
+  tip: string;
+}
+
 export interface PracticeAttempt {
   attempt_id: string;
   question_id: string;
@@ -190,10 +198,22 @@ export interface PracticeAttempt {
   error_step_index: number | null;
   misconception_code: string | null;
   student_state: StudentState | null;
+  // Productive-struggle step, before Gate G's hint — see api.explainAttempt/
+  // skipExplanation. counter_question is set on a first genuine mistake;
+  // hint_text stays null until student_explanation/explanation_outcome
+  // are filled in.
+  counter_question: string | null;
+  student_explanation: string | null;
+  explanation_outcome: "self_corrected" | "confirmed_misconception" | "unclear" | "skipped" | null;
   hint_level: number | null;
   hint_text: string | null;
   post_hint_outcome: string | null;
   latency_ms_breakdown: Record<string, number> | null;
+  // Generated on demand via api.getAttemptReview — null until a student/
+  // teacher explicitly asks for the full "what was wrong / what a perfect
+  // answer looks like" correction, unlike hint_text which is generated
+  // automatically as part of grading.
+  review: AttemptReview | null;
   teacher_override: Record<string, unknown> | null;
   teacher_feedback: "approve" | "reject" | null;
   status: AttemptStatus;
@@ -208,6 +228,28 @@ export type StationStatus = "idle" | "capturing";
 // out rotated 90° and mirrored left-right relative to the page, corrected
 // server-side before any vision call once set.
 export type CameraMount = "front" | "desk";
+
+export interface RadarAlert {
+  id: string;
+  question_id: string;
+  question_text: string | null;
+  topic: string | null;
+  code: string;
+  title: string;
+  description: string | null;
+  typical_work: string | null;
+  desk_count: number;
+  attempting_count: number;
+  desks: { station_id: string; label: string }[];
+  status: "new" | "dismissed" | "false_alarm" | "acted" | "resolved";
+  created_at: string;
+}
+
+export interface RadarResponse {
+  alerts: RadarAlert[];
+  /** Desks stuck with no nameable misconception — shown for transparency, never alerted on. */
+  unclassified: { question_id: string; question_text: string | null; desk_count: number }[];
+}
 
 export interface PracticeStation {
   station_id: string;
@@ -1676,6 +1718,51 @@ export const api = {
   // "what happened before the last 10" view.
   getStationAttemptSummaries: (stationId: string) =>
     request<{ summaries: PracticeAttemptSummary[]; total: number }>(`/practice-stations/${stationId}/attempt-summaries`),
+
+  /**
+   * Generates (or returns the already-cached) full correction panel for one
+   * finished attempt — see PracticeAttempt.review. Unlike hint_text, this
+   * is never called automatically; only when a student/teacher explicitly
+   * expands the "Details" view on a pinpointed mistake.
+   */
+  getAttemptReview: (attemptId: string) =>
+    request<PracticeAttempt>(`/practice-attempts/${attemptId}/review`, { method: "POST" }),
+
+  /**
+   * The "productive struggle" step's response half — a student explaining
+   * their own reasoning after a first mistake, before any hint (see
+   * PracticeAttempt.counter_question). Server transcribes, probes whether
+   * the explanation shows self-correction, and returns the updated
+   * attempt (hint_text is now either encouragement or a real hint).
+   */
+  explainAttempt: (attemptId: string, audioBlob: Blob) => {
+    const formData = new FormData();
+    formData.append("audio", audioBlob, "explanation.webm");
+    return fetch(`${BASE}/practice-attempts/${attemptId}/explain`, {
+      method: "POST",
+      body: formData,
+    }).then(async (res) => {
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new APIError(res.status, err.error ?? "EXPLAIN_ERROR", err.message ?? res.statusText);
+      }
+      return res.json() as Promise<PracticeAttempt>;
+    });
+  },
+
+  /** A student who doesn't want to (or can't) respond to the counter-question. */
+  skipExplanation: (attemptId: string) =>
+    request<PracticeAttempt>(`/practice-attempts/${attemptId}/skip-explanation`, { method: "POST" }),
+
+  /** Cross-desk misconception alerts for a session (teacher screen only). */
+  getSessionRadar: (sessionId: string) =>
+    request<RadarResponse>(`/sessions/${sessionId}/practice/radar`),
+
+  updateRadarAlert: (alertId: string, status: "dismissed" | "false_alarm" | "acted") =>
+    request<RadarAlert>(`/radar-alerts/${alertId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
 
   /**
    * Station-scoped analogs of a session's generate_notes/generate_quiz —

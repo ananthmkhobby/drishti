@@ -1,0 +1,568 @@
+{
+ "label_source": "author-written; NOT teacher-verified; real accuracy needs teacher-labelled data",
+ "cases": [
+  {
+   "id": "m1-correct",
+   "subject": "Mathematics",
+   "grade": 1,
+   "topic": "addition",
+   "question": "3 + 4 = ?",
+   "final_answer": "7",
+   "steps": [
+    "3 + 4 = 7"
+   ],
+   "expected_status": [
+    "solved",
+    "valid_progress",
+    "alternative_valid_method"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [],
+   "answer_domain": "numeric",
+   "note": ""
+  },
+  {
+   "id": "m1-informal-ok",
+   "subject": "Mathematics",
+   "grade": 1,
+   "topic": "addition",
+   "question": "5 + 3 = ?",
+   "final_answer": "8",
+   "steps": [
+    "5... 6, 7, 8 (counted on my fingers)",
+    "5 + 3 = 8"
+   ],
+   "expected_status": [
+    "solved",
+    "valid_progress",
+    "alternative_valid_method"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [],
+   "answer_domain": "numeric",
+   "note": "informal counting-on is a valid Grade 1 method"
+  },
+  {
+   "id": "m2-place-value",
+   "subject": "Mathematics",
+   "grade": 2,
+   "topic": "addition place value",
+   "question": "47 + 58 = ?",
+   "final_answer": "105",
+   "steps": [
+    "47 + 58 = 915"
+   ],
+   "expected_status": [
+    "arithmetic_slip",
+    "conceptual_misconception"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [],
+   "answer_domain": "numeric",
+   "note": "Gate D should catch this deterministically"
+  },
+  {
+   "id": "m3-regroup",
+   "subject": "Mathematics",
+   "grade": 3,
+   "topic": "subtraction regrouping",
+   "question": "52 - 37 = ?",
+   "final_answer": "15",
+   "steps": [
+    "52 - 37 = 25"
+   ],
+   "expected_status": [
+    "arithmetic_slip",
+    "conceptual_misconception"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [],
+   "answer_domain": "numeric",
+   "note": ""
+  },
+  {
+   "id": "m4-perimeter-ok",
+   "subject": "Mathematics",
+   "grade": 4,
+   "topic": "perimeter",
+   "question": "Perimeter of a 4 cm by 3 cm rectangle?",
+   "final_answer": "14 cm",
+   "steps": [
+    "2 x (4 + 3) = 14 cm"
+   ],
+   "expected_status": [
+    "solved",
+    "valid_progress",
+    "alternative_valid_method"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [],
+   "answer_domain": "numeric",
+   "note": ""
+  },
+  {
+   "id": "m4-fraction-size",
+   "subject": "Mathematics",
+   "grade": 4,
+   "topic": "fraction size",
+   "question": "Which is larger, 1/3 or 1/8? Explain.",
+   "final_answer": "1/3",
+   "steps": [
+    "1/8 is larger because 8 is bigger than 3"
+   ],
+   "expected_status": [
+    "conceptual_misconception"
+   ],
+   "expected_misconception": "M-FRAC-02",
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "m5-decimal",
+   "subject": "Mathematics",
+   "grade": 5,
+   "topic": "decimal comparison",
+   "question": "Which is larger, 0.35 or 0.4? Explain.",
+   "final_answer": "0.4",
+   "steps": [
+    "0.35 is larger because 35 is bigger than 4"
+   ],
+   "expected_status": [
+    "conceptual_misconception"
+   ],
+   "expected_misconception": "M-DEC-01",
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "m5-area-perimeter",
+   "subject": "Mathematics",
+   "grade": 5,
+   "topic": "area",
+   "question": "Find the area of a 4 cm by 3 cm rectangle.",
+   "final_answer": "12 cm^2",
+   "steps": [
+    "4 + 3 + 4 + 3 = 14 cm"
+   ],
+   "expected_status": [
+    "conceptual_misconception",
+    "arithmetic_slip"
+   ],
+   "expected_misconception": "M-GEO-02",
+   "forbidden_status": [],
+   "answer_domain": "numeric",
+   "note": ""
+  },
+  {
+   "id": "m6-percent-alt-ok",
+   "subject": "Mathematics",
+   "grade": 6,
+   "topic": "percentages",
+   "question": "Find 25% of 80.",
+   "final_answer": "20",
+   "steps": [
+    "25% = 1/4",
+    "80 / 4 = 20"
+   ],
+   "expected_status": [
+    "solved",
+    "valid_progress",
+    "alternative_valid_method"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [],
+   "answer_domain": "numeric",
+   "note": "different valid method must not be penalised"
+  },
+  {
+   "id": "m6-pct-cancel",
+   "subject": "Mathematics",
+   "grade": 6,
+   "topic": "percentages",
+   "question": "A price rises 20% then falls 20%. Is it back to the original? Explain.",
+   "final_answer": "No, it ends 4% lower",
+   "steps": [
+    "Yes, +20% and -20% cancel out so it is the same price"
+   ],
+   "expected_status": [
+    "conceptual_misconception"
+   ],
+   "expected_misconception": "M-PCT-01",
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "m7-move-term",
+   "subject": "Mathematics",
+   "grade": 7,
+   "topic": "solving equations",
+   "question": "Solve x + 5 = 12.",
+   "final_answer": "x = 7",
+   "steps": [
+    "x + 5 = 12",
+    "x = 12 + 5",
+    "x = 17"
+   ],
+   "expected_status": [
+    "conceptual_misconception",
+    "arithmetic_slip"
+   ],
+   "expected_misconception": "M-ALG-03",
+   "forbidden_status": [],
+   "answer_domain": "algebraic",
+   "note": ""
+  },
+  {
+   "id": "m8-expand-square",
+   "subject": "Mathematics",
+   "grade": 8,
+   "topic": "expanding brackets",
+   "question": "Expand (x + 3)^2.",
+   "final_answer": "x^2 + 6x + 9",
+   "steps": [
+    "(x + 3)^2 = x^2 + 9"
+   ],
+   "expected_status": [
+    "conceptual_misconception",
+    "arithmetic_slip"
+   ],
+   "expected_misconception": "M-ALG-02",
+   "forbidden_status": [],
+   "answer_domain": "algebraic",
+   "note": ""
+  },
+  {
+   "id": "m9-quadratic-ok",
+   "subject": "Mathematics",
+   "grade": 9,
+   "topic": "quadratics",
+   "question": "Solve x^2 - 5x + 6 = 0.",
+   "final_answer": "x = 2 or x = 3",
+   "steps": [
+    "(x - 2)(x - 3) = 0",
+    "x = 2 or x = 3"
+   ],
+   "expected_status": [
+    "solved",
+    "valid_progress",
+    "alternative_valid_method"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [],
+   "answer_domain": "algebraic",
+   "note": ""
+  },
+  {
+   "id": "m10-trig-linear",
+   "subject": "Mathematics",
+   "grade": 10,
+   "topic": "trigonometry",
+   "question": "Find sin(30 + 60) degrees.",
+   "final_answer": "1",
+   "steps": [
+    "sin(30 + 60) = sin 30 + sin 60",
+    "= 0.5 + 0.866 = 1.366"
+   ],
+   "expected_status": [
+    "conceptual_misconception",
+    "arithmetic_slip"
+   ],
+   "expected_misconception": "M-TRIG-01",
+   "forbidden_status": [],
+   "answer_domain": "numeric",
+   "note": ""
+  },
+  {
+   "id": "p8-unit",
+   "subject": "Physics",
+   "grade": 8,
+   "topic": "speed",
+   "question": "A car travels 120 km in 2 h. Find its speed.",
+   "final_answer": "60 km/h",
+   "steps": [
+    "v = 120 / 2 = 60 m"
+   ],
+   "expected_status": [
+    "arithmetic_slip",
+    "conceptual_misconception"
+   ],
+   "expected_misconception": "P-UNIT-01",
+   "forbidden_status": [],
+   "answer_domain": "numeric",
+   "note": ""
+  },
+  {
+   "id": "p9-impetus",
+   "subject": "Physics",
+   "grade": 9,
+   "topic": "force and motion",
+   "question": "A puck slides at constant speed on frictionless ice. What horizontal forces act on it?",
+   "final_answer": "None",
+   "steps": [
+    "There must be a forward force keeping it moving"
+   ],
+   "expected_status": [
+    "conceptual_misconception"
+   ],
+   "expected_misconception": "P-FORCE-01",
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "p9-inertia-ok",
+   "subject": "Physics",
+   "grade": 9,
+   "topic": "force and motion",
+   "question": "A puck slides at constant speed on frictionless ice. What horizontal forces act on it?",
+   "final_answer": "None",
+   "steps": [
+    "No horizontal force acts, so it keeps moving by inertia (Newton's first law)"
+   ],
+   "expected_status": [
+    "solved",
+    "valid_progress",
+    "alternative_valid_method"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "p10-series-circuit",
+   "subject": "Physics",
+   "grade": 10,
+   "topic": "circuits",
+   "question": "Find the current I in the circuit shown.",
+   "final_answer": "2 A",
+   "steps": [
+    "I = V / R1 = 12 / 4 = 3 A"
+   ],
+   "expected_status": [
+    "conceptual_misconception",
+    "arithmetic_slip"
+   ],
+   "expected_misconception": "P-ELEC-02",
+   "forbidden_status": [],
+   "answer_domain": "numeric",
+   "note": "",
+   "diagram_context": "Series circuit: 12V battery, R1=4 ohm, R2=2 ohm"
+  },
+  {
+   "id": "c9-mole",
+   "subject": "Chemistry",
+   "grade": 9,
+   "topic": "the mole",
+   "question": "How many moles are in 36 g of water (M = 18 g/mol)?",
+   "final_answer": "2 mol",
+   "steps": [
+    "36 g of water is 36 mol"
+   ],
+   "expected_status": [
+    "conceptual_misconception",
+    "arithmetic_slip"
+   ],
+   "expected_misconception": "C-MOLE-01",
+   "forbidden_status": [],
+   "answer_domain": "numeric",
+   "note": ""
+  },
+  {
+   "id": "c10-subscript",
+   "subject": "Chemistry",
+   "grade": 10,
+   "topic": "balancing equations",
+   "question": "Balance: H2 + O2 -> H2O",
+   "final_answer": "2H2 + O2 -> 2H2O",
+   "steps": [
+    "H2 + O2 -> H2O2"
+   ],
+   "expected_status": [
+    "conceptual_misconception"
+   ],
+   "expected_misconception": "C-BAL-01",
+   "forbidden_status": [],
+   "answer_domain": "other",
+   "note": ""
+  },
+  {
+   "id": "c10-balance-ok",
+   "subject": "Chemistry",
+   "grade": 10,
+   "topic": "balancing equations",
+   "question": "Balance: H2 + O2 -> H2O",
+   "final_answer": "2H2 + O2 -> 2H2O",
+   "steps": [
+    "2H2 + O2 -> 2H2O"
+   ],
+   "expected_status": [
+    "solved",
+    "valid_progress",
+    "alternative_valid_method"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [],
+   "answer_domain": "other",
+   "note": ""
+  },
+  {
+   "id": "s5-plant-food",
+   "subject": "Science",
+   "grade": 5,
+   "topic": "plant nutrition",
+   "question": "Where do plants get their food from?",
+   "final_answer": "They make it by photosynthesis",
+   "steps": [
+    "Plants get their food from the soil through their roots"
+   ],
+   "expected_status": [
+    "conceptual_misconception"
+   ],
+   "expected_misconception": "S-PLANT-01",
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "s5-photosynthesis-ok",
+   "subject": "Science",
+   "grade": 5,
+   "topic": "plant nutrition",
+   "question": "Where do plants get their food from?",
+   "final_answer": "They make it by photosynthesis",
+   "steps": [
+    "Plants make their own food by photosynthesis using sunlight, water and carbon dioxide"
+   ],
+   "expected_status": [
+    "solved",
+    "valid_progress",
+    "alternative_valid_method"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "s6-seasons",
+   "subject": "Science",
+   "grade": 6,
+   "topic": "seasons",
+   "question": "Why do we have seasons?",
+   "final_answer": "Earth's axial tilt",
+   "steps": [
+    "Summer happens because the Earth is closer to the Sun"
+   ],
+   "expected_status": [
+    "conceptual_misconception"
+   ],
+   "expected_misconception": "S-EARTH-01",
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "h8-single-cause",
+   "subject": "History",
+   "grade": 8,
+   "topic": "causes of WWI",
+   "question": "Explain why the First World War began.",
+   "final_answer": "Alliances, militarism, imperialism, nationalism, triggered by the 1914 assassination",
+   "steps": [
+    "WWI began because Archduke Franz Ferdinand was assassinated"
+   ],
+   "expected_status": [
+    "conceptual_misconception",
+    "incomplete"
+   ],
+   "expected_misconception": "H-CAUSE-01",
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "h9-anachronism",
+   "subject": "History",
+   "grade": 9,
+   "topic": "causes of WWI",
+   "question": "Explain why the First World War began in 1914.",
+   "final_answer": "Alliances, militarism, imperialism, nationalism, triggered by the assassination",
+   "steps": [
+    "It began because the printing press let countries share war propaganda quickly"
+   ],
+   "expected_status": [
+    "conceptual_misconception"
+   ],
+   "expected_misconception": "H-CHRON-01",
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "l3-correct",
+   "subject": "Language",
+   "grade": 3,
+   "topic": "sentences",
+   "question": "Write one sentence about your pet using 'is'.",
+   "final_answer": "(any correct sentence)",
+   "steps": [
+    "My dog is brown."
+   ],
+   "expected_status": [
+    "solved",
+    "valid_progress",
+    "alternative_valid_method"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "l5-agreement",
+   "subject": "Language",
+   "grade": 5,
+   "topic": "subject-verb agreement",
+   "question": "Choose is/are: The boys ___ playing.",
+   "final_answer": "are",
+   "steps": [
+    "The boys is playing"
+   ],
+   "expected_status": [
+    "conceptual_misconception"
+   ],
+   "expected_misconception": "L-GRAM-01",
+   "forbidden_status": [],
+   "answer_domain": "conceptual",
+   "note": ""
+  },
+  {
+   "id": "l2-developmental-spelling",
+   "subject": "Language",
+   "grade": 2,
+   "topic": "spelling",
+   "question": "Write the word for a young dog.",
+   "final_answer": "puppy",
+   "steps": [
+    "pupy"
+   ],
+   "expected_status": [
+    "solved",
+    "valid_progress",
+    "incomplete",
+    "ambiguous",
+    "alternative_valid_method"
+   ],
+   "expected_misconception": null,
+   "forbidden_status": [
+    "conceptual_misconception"
+   ],
+   "answer_domain": "conceptual",
+   "note": "Grade 2 phonetic spelling must NOT be called a misconception"
+  }
+ ]
+}
